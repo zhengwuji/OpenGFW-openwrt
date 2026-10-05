@@ -7,15 +7,21 @@ on:
       - master
     paths-ignore:
       - '**.md'
+      - 'README.md'
       - 'docs/**'
       - '.github/workflows/check.yaml'
+      - '.gitignore'
+      - 'LICENSE'
   pull_request:
     branches:
       - main
       - master
     paths-ignore:
       - '**.md'
+      - 'README.md'
       - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE'
   workflow_dispatch:
 
 permissions:
@@ -291,7 +297,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: "v1.0.0"
+          target_commitish: ${{ github.sha }}
           name: "OpenGFW OpenWrt Plugins Auto-Build (v1.0.0)"
+          make_latest: true
           body: |
             ## OpenGFW for OpenWrt 插件自动编译产物
 
