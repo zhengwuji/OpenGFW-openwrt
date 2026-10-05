@@ -97,7 +97,7 @@ jobs:
       - name: Assemble & Pack OpenWrt IPK
         run: |
           set -e
-          PKG_VERSION="1.0.0-$(date +%Y%m%d)"
+          PKG_VERSION="1.0.0-r${{ github.run_number }}"
           ARCH_NAME="${{ matrix.arch }}"
           IPK_NAME="luci-app-opengfw_${PKG_VERSION}_${ARCH_NAME}.ipk"
           
@@ -202,7 +202,7 @@ jobs:
       - name: Pack Universal LuCI IPK
         run: |
           set -e
-          PKG_VERSION="1.0.0-$(date +%Y%m%d)"
+          PKG_VERSION="1.0.0-r${{ github.run_number }}"
           IPK_NAME="luci-app-opengfw_${PKG_VERSION}_all.ipk"
           
           WORKDIR=$(mktemp -d)
@@ -293,36 +293,65 @@ jobs:
           ls -lh
           cat sha256sums.txt
 
-      - name: Publish or Update GitHub Release
+      - name: Generate Release Notes & Metadata
+        id: vars
+        run: |
+          RUN_NUM="${{ github.run_number }}"
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          BUILD_DATE=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          COMMIT_MSG=$(git log -1 --pretty=%s)
+          
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG_NAME="${{ github.ref_name }}"
+            REL_NAME="OpenGFW for OpenWrt (${TAG_NAME})"
+          else
+            TAG_NAME="v1.0.0-r${RUN_NUM}"
+            REL_NAME="OpenGFW for OpenWrt (v1.0.0-r${RUN_NUM})"
+          fi
+          
+          echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "rel_name=${REL_NAME}" >> $GITHUB_OUTPUT
+          
+          cat <<EOF > release_notes.md
+          ## OpenGFW for OpenWrt 插件自动编译产物 (Build #${RUN_NUM})
+
+          本发布包由 GitHub Actions 自动编译构建，**自适应所有 OpenWrt / ImmortalWrt / iStoreOS 系统版本**。
+          
+          ### 📝 本次构建发布信息：
+          - **关联代码提交**: [\`${SHORT_SHA}\`](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
+          - **提交说明**: ${COMMIT_MSG}
+          - **构建序号**: #${RUN_NUM}
+          - **发布时间**: ${BUILD_DATE}
+
+          ### 📦 安装包选型指南：
+          - **x86_64 软路由**（Intel/AMD 处理器，如 N100 / J4125 / i3 / i5 / 常见工控机软路由）：
+            👉 请下载：\`luci-app-opengfw_1.0.0-r${RUN_NUM}_x86_64.ipk\`
+          - **ARM64 软路由/硬路由**（树莓派 4/5、NanoPi R2S/R4S/R5S/R6S、RK3399/RK3568/RK3588、MT798x 等）：
+            👉 请下载：\`luci-app-opengfw_1.0.0-r${RUN_NUM}_aarch64_generic.ipk\`
+          - **ARM32 硬路由**（IPQ40xx 系列等）：
+            👉 请下载：\`luci-app-opengfw_1.0.0-r${RUN_NUM}_arm_cortex-a7_neon-vfpv4.ipk\`
+          - **MIPS 小端路由**（MT7621、斐讯 K2P、新路由 3 等）：
+            👉 请下载：\`luci-app-opengfw_1.0.0-r${RUN_NUM}_mipsel_24kc.ipk\`
+          - **纯 LuCI 界面包**（所有平台通用，需自行放置对应架构二进制）：
+            👉 请下载：\`luci-app-opengfw_1.0.0-r${RUN_NUM}_all.ipk\`
+
+          ### 🚀 安装方法：
+          1. 登录 OpenWrt 管理后台，进入 **【系统】 -> 【软件包】 -> 【上传软件包】**；
+          2. 选择下载的 \`.ipk\` 文件，点击 **【安装】**；
+          3. 安装完毕后刷新浏览器页面，在导航菜单 **【服务】 -> 【OpenGFW 防火墙】** 即可开箱即用！
+          EOF
+          sed -i 's/^[ \t]*//' release_notes.md
+
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: "v1.0.0"
+          tag_name: ${{ steps.vars.outputs.tag_name }}
           target_commitish: ${{ github.sha }}
-          name: "OpenGFW OpenWrt Plugins Auto-Build (v1.0.0)"
+          name: ${{ steps.vars.outputs.rel_name }}
           make_latest: true
-          body: |
-            ## OpenGFW for OpenWrt 插件自动编译产物
-
-            本发布包由 GitHub Actions 自动编译构建，**自适应所有 OpenWrt / ImmortalWrt / iStoreOS 系统版本**。
-            
-            ### 📦 安装包选型指南：
-            - **x86_64 软路由**（Intel/AMD 处理器，如 N100 / J4125 / i3 / i5 / 常见工控机软路由）：
-              👉 请下载：`luci-app-opengfw_*_x86_64.ipk`
-            - **ARM64 软路由/硬路由**（树莓派 4/5、NanoPi R2S/R4S/R5S/R6S、RK3399/RK3568/RK3588、MT798x 等）：
-              👉 请下载：`luci-app-opengfw_*_aarch64_generic.ipk`
-            - **ARM32 硬路由**（IPQ40xx 系列等）：
-              👉 请下载：`luci-app-opengfw_*_arm_cortex-a7_neon-vfpv4.ipk`
-            - **MIPS 小端路由**（MT7621、斐讯 K2P、新路由 3 等）：
-              👉 请下载：`luci-app-opengfw_*_mipsel_24kc.ipk`
-            - **纯 LuCI 界面包**（所有平台通用，需自行放置对应架构二进制）：
-              👉 请下载：`luci-app-opengfw_*_all.ipk`
-
-            ### 🚀 安装方法：
-            1. 登录 OpenWrt 管理后台，进入 **【系统】 -> 【软件包】 -> 【上传软件包】**；
-            2. 选择下载的 `.ipk` 文件，点击 **【安装】**；
-            3. 安装完毕后刷新浏览器页面，在导航菜单 **【服务】 -> 【OpenGFW 防火墙】** 即可开箱即用！
+          body_path: release_notes.md
           files: |
             dist_release/*.ipk
             dist_release/sha256sums.txt
