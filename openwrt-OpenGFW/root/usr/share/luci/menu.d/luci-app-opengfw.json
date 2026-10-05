@@ -1,0 +1,52 @@
+{
+	"admin/services/opengfw": {
+		"title": "OpenGFW 防火墙",
+		"action": {
+			"type": "firstchild"
+		},
+		"order": 55,
+		"depends": {
+			"acl": [ "luci-app-opengfw" ]
+		}
+	},
+	"admin/services/opengfw/overview": {
+		"title": "基本设置",
+		"order": 10,
+		"action": {
+			"type": "view",
+			"path": "opengfw/overview"
+		}
+	},
+	"admin/services/opengfw/rules": {
+		"title": "规则管理",
+		"order": 20,
+		"action": {
+			"type": "view",
+			"path": "opengfw/rules"
+		}
+	},
+	"admin/services/opengfw/geoip": {
+		"title": "地区 IP 拦截",
+		"order": 22,
+		"action": {
+			"type": "view",
+			"path": "opengfw/geoip"
+		}
+	},
+	"admin/services/opengfw/adblock": {
+		"title": "广告规则导入",
+		"order": 25,
+		"action": {
+			"type": "view",
+			"path": "opengfw/adblock"
+		}
+	},
+	"admin/services/opengfw/log": {
+		"title": "实时日志",
+		"order": 30,
+		"action": {
+			"type": "view",
+			"path": "opengfw/log"
+		}
+	}
+}

@@ -208,3 +208,8 @@ $RECYCLE.BIN/
 
 # Internal tools not ready for public use yet
 tools/flowseq/
+scratch/
+bin_out/
+dist_release/
+release_pkgs/
+*.ipk

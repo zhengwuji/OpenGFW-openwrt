@@ -1,0 +1,46 @@
+#!/bin/sh
+# OpenGFW 自动定时更新脚本 (每周自动执行)
+LOG_TAG="opengfw-autoupdate"
+
+logger -t "$LOG_TAG" "开始执行 OpenGFW 规则与基础库自动更新..."
+
+# 1. 更新 GeoIP 和 GeoSite 官方基础库
+if [ -x /usr/bin/opengfw-update-dat ]; then
+    /usr/bin/opengfw-update-dat >/dev/null 2>&1
+    logger -t "$LOG_TAG" "GeoIP 与 GeoSite 官方基础库更新完成"
+fi
+
+# 2. 自动拉取更新所有已保存的广告规则订阅 URL
+if [ -f /etc/opengfw/adblock_subscriptions.txt ] && [ -x /usr/bin/opengfw-adblock-tool ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+        line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [ -z "$line" ] && continue
+        case "$line" in \#*) continue ;; esac
+        name=$(echo "$line" | awk '{print $1}')
+        url=$(echo "$line" | awk '{print $2}')
+        if [ -n "$name" ] && [ -n "$url" ]; then
+            logger -t "$LOG_TAG" "正在自动更新广告订阅: $name ($url)..."
+            /usr/bin/opengfw-adblock-tool import --url "$url" --name "$name" --no-reload >/dev/null 2>&1
+        fi
+    done < /etc/opengfw/adblock_subscriptions.txt
+    logger -t "$LOG_TAG" "全部广告规则订阅自动更新完成"
+fi
+
+# 3. 自动更新自定义 IP 订阅
+if [ -x /usr/bin/opengfw-geoip-helper ]; then
+    /usr/bin/opengfw-geoip-helper sync >/dev/null 2>&1
+fi
+
+# 4. 同步与重新载入白名单 (确保 whitelist 始终写入 geosite.dat)
+if [ -x /usr/bin/opengfw-whitelist-helper ]; then
+    /usr/bin/opengfw-whitelist-helper sync >/dev/null 2>&1
+    logger -t "$LOG_TAG" "用户自定义白名单同步完成"
+fi
+
+# 5. 热重载 OpenGFW 防火墙服务 (无感秒级生效)
+if pidof opengfw >/dev/null 2>&1; then
+    killall -HUP opengfw 2>/dev/null || /etc/init.d/opengfw reload >/dev/null 2>&1
+    logger -t "$LOG_TAG" "OpenGFW 服务热重载完成，新规则已全面生效"
+fi
+
+logger -t "$LOG_TAG" "OpenGFW 规则自动更新任务顺利结束"

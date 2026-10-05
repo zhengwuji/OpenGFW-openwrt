@@ -1,0 +1,96 @@
+#!/bin/sh
+# OpenGFW 全球 IP 数据库与域名分类库自动更新脚本
+# 支持多源镜像容灾、原子替换与自动热重载
+
+DIR="/etc/opengfw"
+mkdir -p "$DIR"
+
+LOG_TAG="opengfw-updater"
+
+download_file() {
+    local target_name="$1"
+    local final_path="$DIR/$target_name"
+    local tmp_path="$DIR/${target_name}.tmp"
+    local urls="$2"
+    local success=0
+
+    echo "[*] 开始下载最新 $target_name ..."
+    for url in $urls; do
+        echo "  -> 尝试镜像源: $url"
+        if curl -s -L --connect-timeout 10 --max-time 120 -o "$tmp_path" "$url"; then
+            # 校验文件大小 (geoip 至少大于 1MB, geosite 至少大于 1MB)
+            local fsize
+            fsize=$(wc -c < "$tmp_path" 2>/dev/null || echo 0)
+            if [ "$fsize" -gt 1000000 ]; then
+                mv -f "$tmp_path" "$final_path"
+                local readable_size
+                readable_size=$(ls -lh "$final_path" | awk '{print $5}')
+                echo "[+] $target_name 更新成功！大小: $readable_size"
+                logger -t "$LOG_TAG" "$target_name 更新成功 ($readable_size)"
+                success=1
+                break
+            else
+                echo "  [-] 文件校验失败，大小异常 ($fsize 字节)，尝试下一个源..."
+                rm -f "$tmp_path"
+            fi
+        else
+            echo "  [-] 连接超时或下载失败，尝试下一个源..."
+            rm -f "$tmp_path"
+        fi
+    done
+
+    if [ "$success" -eq 0 ]; then
+        echo "[-] $target_name 所有镜像源均下载失败，保持现有文件不变。"
+        logger -t "$LOG_TAG" "错误: $target_name 更新失败"
+        return 1
+    fi
+    return 0
+}
+
+# 多个高可用国内/国际镜像源
+GEOIP_MIRRORS="https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat https://ghproxy.net/https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/geoip.dat https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/geoip.dat"
+
+GEOSITE_MIRRORS="https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat https://ghproxy.net/https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/geosite.dat https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/geosite.dat"
+
+ret_geoip=0
+ret_geosite=0
+
+download_file "geoip.dat" "$GEOIP_MIRRORS" || ret_geoip=1
+download_file "geosite.dat" "$GEOSITE_MIRRORS" || ret_geosite=1
+
+date "+%Y-%m-%d %H:%M:%S" > "$DIR/last_update.txt"
+
+# 同步自动下载并合并所有自定义 IP 订阅链接
+if [ -x "/usr/bin/opengfw-geoip-helper" ]; then
+    echo "[*] 正在同步下载与合并所有自定义 IP 订阅链接..."
+    /usr/bin/opengfw-geoip-helper sync-custom-ips 2>/dev/null || true
+fi
+
+# 重新合并用户自定义广告规则订阅（防止下载的基础库冲掉已导入规则）
+if [ -f "$DIR/adblock_subscriptions.txt" ] && [ -x "/usr/bin/opengfw-adblock-tool" ]; then
+    echo "[*] 正在重新合并用户自定义广告规则订阅..."
+    while IFS= read -r line || [ -n "$line" ]; do
+        line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [ -z "$line" ] && continue
+        case "$line" in \#*) continue ;; esac
+        sub_name=$(echo "$line" | awk '{print $1}')
+        sub_url=$(echo "$line" | awk '{print $2}')
+        if [ -n "$sub_name" ] && [ -n "$sub_url" ]; then
+            /usr/bin/opengfw-adblock-tool import --url "$sub_url" --name "$sub_name" --no-reload >/dev/null 2>&1 || true
+        fi
+    done < "$DIR/adblock_subscriptions.txt"
+fi
+
+# 重新同步用户自定义白名单
+if [ -x "/usr/bin/opengfw-whitelist-helper" ]; then
+    echo "[*] 正在重新合并用户自定义白名单..."
+    /usr/bin/opengfw-whitelist-helper sync >/dev/null 2>&1 || true
+fi
+
+if [ "$ret_geoip" -eq 0 ] || [ "$ret_geosite" -eq 0 ]; then
+    echo "[*] 正在向 OpenGFW 发送热重载信号..."
+    /etc/init.d/opengfw reload 2>/dev/null || true
+    echo "[+] 全球 IP 段落、广告规则库与白名单已无缝加载生效！"
+else
+    echo "[-] 本次更新未能获取到新版本数据库。"
+fi

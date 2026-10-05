@@ -1,0 +1,134 @@
+#!/bin/sh
+# OpenGFW 状态输出脚本 (返回纯 JSON 格式给 LuCI 网页端)
+
+RAW_PID=$(pidof opengfw | awk '{print $1}')
+RULES_PATH="/etc/opengfw/rules.yaml"
+CONF_PATH="/etc/opengfw/config.yaml"
+GEOIP_PATH="/etc/opengfw/geoip.dat"
+GEOSITE_PATH="/etc/opengfw/geosite.dat"
+
+if [ -n "$RAW_PID" ]; then
+    PID="$RAW_PID"
+    RUNNING="true"
+    RSS=$(awk '/VmRSS/{print $2}' /proc/$PID/status 2>/dev/null)
+    [ -z "$RSS" ] && RSS=0
+    MEM=$(awk "BEGIN {printf \"%.1f MB\", $RSS/1024}")
+    
+    # 计算进程运行时间
+    if [ -f "/proc/$PID/stat" ]; then
+        START_TIME=$(awk '{print $22}' "/proc/$PID/stat" 2>/dev/null)
+        SYS_UPTIME=$(awk '{print int($1)}' /proc/uptime)
+        CLK_TCK=$(getconf CLK_TCK 2>/dev/null || echo 100)
+        UPTIME_SEC=$((SYS_UPTIME - (START_TIME / CLK_TCK)))
+        HOURS=$((UPTIME_SEC / 3600))
+        MINS=$(( (UPTIME_SEC % 3600) / 60 ))
+        SECS=$((UPTIME_SEC % 60))
+        UPTIME_FMT="${HOURS}小时 ${MINS}分 ${SECS}秒"
+    else
+        UPTIME_FMT="运行中"
+    fi
+else
+    RUNNING="false"
+    PID="null"
+    MEM="0 MB"
+    UPTIME_FMT="已停止运行"
+fi
+
+# 统计规则条数
+RULES_COUNT=0
+if [ -f "$RULES_PATH" ]; then
+    RULES_COUNT=$(grep -c '^[[:space:]]*- name:' "$RULES_PATH" 2>/dev/null || echo 0)
+fi
+
+# 检查规则库文件
+[ -f "$GEOIP_PATH" ] && GEOIP_SIZE=$(ls -lh "$GEOIP_PATH" 2>/dev/null | awk '{print $5}') || GEOIP_SIZE="未安装"
+[ -f "$GEOSITE_PATH" ] && GEOSITE_SIZE=$(ls -lh "$GEOSITE_PATH" 2>/dev/null | awk '{print $5}') || GEOSITE_SIZE="未安装"
+
+# 读取 nftables 数据包统计
+NFT_ACTIVE="false"
+QUEUED_PKTS=0
+ACCEPTED_PKTS=0
+DROPPED_PKTS=0
+
+if nft list table inet opengfw >/dev/null 2>&1; then
+    NFT_ACTIVE="true"
+    ACCEPTED_PKTS=$(nft list table inet opengfw 2>/dev/null | grep -E '0x000003e9|1001' | sed -n 's/.*packets \([0-9]*\).*/\1/p' | head -n 1)
+    [ -z "$ACCEPTED_PKTS" ] && ACCEPTED_PKTS=0
+    DROPPED_PKTS=$(nft list table inet opengfw 2>/dev/null | grep -E '0x000003ea|1002' | sed -n 's/.*packets \([0-9]*\).*/\1/p' | head -n 1)
+    [ -z "$DROPPED_PKTS" ] && DROPPED_PKTS=0
+    QUEUED_PKTS=$(nft list table inet opengfw 2>/dev/null | grep -E 'queue.*to 100' | sed -n 's/.*packets \([0-9]*\).*/\1/p' | head -n 1)
+    [ -z "$QUEUED_PKTS" ] && QUEUED_PKTS=0
+fi
+
+# 统计拦截日志与命中数
+LOG_FILE="/var/log/opengfw.log"
+ADS_BLOCKED=0
+IPS_BLOCKED=0
+TOTAL_BLOCKED=0
+RECENT_EVENTS="[]"
+
+if [ -f "$LOG_FILE" ]; then
+    # 日志自动防爆内存轮转 (超过 3MB 保留最新 3000 行)
+    fsize=$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)
+    if [ "$fsize" -gt 3145728 ]; then
+        tail -n 3000 "$LOG_FILE" > "${LOG_FILE}.tmp" && mv -f "${LOG_FILE}.tmp" "$LOG_FILE"
+    fi
+
+    ADS_BLOCKED=$(grep -icE '拦截广告|adblock|block ads' "$LOG_FILE" 2>/dev/null || echo 0)
+    IPS_BLOCKED=$(grep -icE '地区|自定义IP' "$LOG_FILE" 2>/dev/null || echo 0)
+    
+    RECENT_EVENTS=$(grep -E 'ruleset log' "$LOG_FILE" 2>/dev/null | tail -n 10 | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | tr '\t' ' ' | tr -d '\r' | awk '{
+        line=$0
+        gsub(/\\/, "\\\\", line)
+        gsub(/"/, "\\\"", line)
+        printf "\"%s\",", line
+    }' | sed 's/,$//')
+    [ -z "$RECENT_EVENTS" ] && RECENT_EVENTS=""
+    RECENT_EVENTS="[$RECENT_EVENTS]"
+fi
+
+QUEUED_PKTS=$(echo "$QUEUED_PKTS" | tr -cd '0-9')
+QUEUED_PKTS=$(printf "%d" "$QUEUED_PKTS" 2>/dev/null || echo 0)
+
+ACCEPTED_PKTS=$(echo "$ACCEPTED_PKTS" | tr -cd '0-9')
+ACCEPTED_PKTS=$(printf "%d" "$ACCEPTED_PKTS" 2>/dev/null || echo 0)
+
+DROPPED_PKTS=$(echo "$DROPPED_PKTS" | tr -cd '0-9')
+DROPPED_PKTS=$(printf "%d" "$DROPPED_PKTS" 2>/dev/null || echo 0)
+
+ADS_BLOCKED=$(echo "$ADS_BLOCKED" | tr -cd '0-9')
+ADS_BLOCKED=$(printf "%d" "$ADS_BLOCKED" 2>/dev/null || echo 0)
+
+IPS_BLOCKED=$(echo "$IPS_BLOCKED" | tr -cd '0-9')
+IPS_BLOCKED=$(printf "%d" "$IPS_BLOCKED" 2>/dev/null || echo 0)
+
+TOTAL_BLOCKED=$((DROPPED_PKTS + ADS_BLOCKED + IPS_BLOCKED))
+TOTAL_BLOCKED=$(printf "%d" "$TOTAL_BLOCKED" 2>/dev/null || echo 0)
+
+RAW_MODE=$(uci -q get opengfw.global.mode || echo "forward")
+if [ "$RAW_MODE" = "forward" ]; then
+    MODE_DESC="网关转发模式 (全设备过滤)"
+else
+    MODE_DESC="单机自测模式"
+fi
+
+cat <<EOF
+{
+  "running": $RUNNING,
+  "pid": $PID,
+  "memory": "$MEM",
+  "uptime": "$UPTIME_FMT",
+  "mode": "$MODE_DESC",
+  "rules_count": $RULES_COUNT,
+  "geoip_status": "$GEOIP_SIZE",
+  "geosite_status": "$GEOSITE_SIZE",
+  "nft_active": $NFT_ACTIVE,
+  "pkts_queued": $QUEUED_PKTS,
+  "pkts_accepted": $ACCEPTED_PKTS,
+  "pkts_dropped": $DROPPED_PKTS,
+  "ads_blocked": $ADS_BLOCKED,
+  "ips_blocked": $IPS_BLOCKED,
+  "total_blocked": $TOTAL_BLOCKED,
+  "recent_events": $RECENT_EVENTS
+}
+EOF

@@ -1,0 +1,30 @@
+{
+	"luci-app-opengfw": {
+		"description": "Grant access for OpenGFW LuCI interface",
+		"read": {
+			"uci": [ "opengfw" ],
+			"file": {
+				"/etc/opengfw/*": [ "read" ],
+				"/var/log/opengfw.log": [ "read" ],
+				"/usr/bin/opengfw*": [ "exec" ],
+				"/etc/init.d/opengfw": [ "exec" ],
+				"/bin/*": [ "exec" ],
+				"/sbin/*": [ "exec" ]
+			},
+			"ubus": {
+				"service": [ "list" ]
+			}
+		},
+		"write": {
+			"uci": [ "opengfw" ],
+			"file": {
+				"/etc/opengfw/*": [ "write" ],
+				"/var/log/opengfw.log": [ "write" ],
+				"/usr/bin/opengfw*": [ "exec" ],
+				"/etc/init.d/opengfw": [ "exec" ],
+				"/bin/*": [ "exec" ],
+				"/sbin/*": [ "exec" ]
+			}
+		}
+	}
+}

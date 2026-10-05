@@ -188,14 +188,27 @@ func CompileExprRules(rules []ExprRule, ans []analyzer.Analyzer, mods []modifier
 }
 
 func streamInfoToExprEnv(info StreamInfo) map[string]any {
+	ipProtoNum := 6
+	if info.Protocol == ProtocolUDP {
+		ipProtoNum = 17
+	}
 	m := map[string]any{
 		"id":    info.ID,
 		"proto": info.Protocol.String(),
-		"ip": map[string]string{
-			"src": info.SrcIP.String(),
-			"dst": info.DstIP.String(),
+		"ip": map[string]any{
+			"src":      info.SrcIP.String(),
+			"dst":      info.DstIP.String(),
+			"protocol": ipProtoNum,
 		},
 		"port": map[string]uint16{
+			"src": info.SrcPort,
+			"dst": info.DstPort,
+		},
+		"tcp": map[string]any{
+			"src": info.SrcPort,
+			"dst": info.DstPort,
+		},
+		"udp": map[string]any{
 			"src": info.SrcPort,
 			"dst": info.DstPort,
 		},
@@ -204,6 +217,36 @@ func streamInfoToExprEnv(info StreamInfo) map[string]any {
 		if len(anProps) != 0 {
 			// Ignore analyzers with empty properties
 			m[anName] = anProps
+		}
+	}
+	if tlsProp, ok := m["tls"].(analyzer.PropMap); ok {
+		if req, ok := tlsProp["req"].(analyzer.PropMap); ok {
+			if sni, ok := req["sni"].(string); ok {
+				tlsProp["sni"] = sni
+			}
+		}
+	}
+	if quicProp, ok := m["quic"].(analyzer.PropMap); ok {
+		if req, ok := quicProp["req"].(analyzer.PropMap); ok {
+			if sni, ok := req["sni"].(string); ok {
+				quicProp["sni"] = sni
+			}
+		}
+	}
+	if httpProp, ok := m["http"].(analyzer.PropMap); ok {
+		if req, ok := httpProp["req"].(analyzer.PropMap); ok {
+			if headers, ok := req["headers"].(analyzer.PropMap); ok {
+				if host, ok := headers["host"].(string); ok {
+					httpProp["host"] = host
+				}
+			}
+		}
+	}
+	if dnsProp, ok := m["dns"].(analyzer.PropMap); ok {
+		if questions, ok := dnsProp["questions"].([]analyzer.PropMap); ok && len(questions) > 0 {
+			if name, ok := questions[0]["name"].(string); ok {
+				dnsProp["name"] = name
+			}
 		}
 	}
 	return m
@@ -308,17 +351,33 @@ func buildFunctionMap(config *BuiltinConfig) map[string]*Function {
 			InitFunc:  geoMatcher.LoadGeoIP,
 			PatchFunc: nil,
 			Func: func(params ...any) (any, error) {
-				return geoMatcher.MatchGeoIp(params[0].(string), params[1].(string)), nil
+				s, ok := params[0].(string)
+				if !ok || s == "" {
+					return false, nil
+				}
+				c, ok := params[1].(string)
+				if !ok || c == "" {
+					return false, nil
+				}
+				return geoMatcher.MatchGeoIp(s, c), nil
 			},
-			Types: []reflect.Type{reflect.TypeOf(geoMatcher.MatchGeoIp)},
+			Types: []reflect.Type{reflect.TypeOf(func(any, string) bool { return false })},
 		},
 		"geosite": {
 			InitFunc:  geoMatcher.LoadGeoSite,
 			PatchFunc: nil,
 			Func: func(params ...any) (any, error) {
-				return geoMatcher.MatchGeoSite(params[0].(string), params[1].(string)), nil
+				s, ok := params[0].(string)
+				if !ok || s == "" {
+					return false, nil
+				}
+				c, ok := params[1].(string)
+				if !ok || c == "" {
+					return false, nil
+				}
+				return geoMatcher.MatchGeoSite(s, c), nil
 			},
-			Types: []reflect.Type{reflect.TypeOf(geoMatcher.MatchGeoSite)},
+			Types: []reflect.Type{reflect.TypeOf(func(any, string) bool { return false })},
 		},
 		"cidr": {
 			InitFunc: nil,
@@ -335,9 +394,17 @@ func buildFunctionMap(config *BuiltinConfig) map[string]*Function {
 				return nil
 			},
 			Func: func(params ...any) (any, error) {
-				return builtins.MatchCIDR(params[0].(string), params[1].(*net.IPNet)), nil
+				s, ok := params[0].(string)
+				if !ok || s == "" {
+					return false, nil
+				}
+				ipNet, ok := params[1].(*net.IPNet)
+				if !ok || ipNet == nil {
+					return false, nil
+				}
+				return builtins.MatchCIDR(s, ipNet), nil
 			},
-			Types: []reflect.Type{reflect.TypeOf(builtins.MatchCIDR)},
+			Types: []reflect.Type{reflect.TypeOf(func(any, *net.IPNet) bool { return false })},
 		},
 		"lookup": {
 			InitFunc: nil,

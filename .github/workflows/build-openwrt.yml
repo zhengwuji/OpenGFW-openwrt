@@ -1,0 +1,319 @@
+name: Build OpenWrt Packages
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/workflows/check.yaml'
+  pull_request:
+    branches:
+      - main
+      - master
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-ipk:
+    name: Build IPK (${{ matrix.desc }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            goos: linux
+            goarch: amd64
+            goarm: ""
+            gomips: ""
+            desc: "x86_64 (软路由 AMD/Intel)"
+          - arch: aarch64_generic
+            goos: linux
+            goarch: arm64
+            goarm: ""
+            gomips: ""
+            desc: "aarch64 (ARM64 软路由/树莓派/NanoPi/RK3568/MT798x)"
+          - arch: arm_cortex-a7_neon-vfpv4
+            goos: linux
+            goarch: arm
+            goarm: "7"
+            gomips: ""
+            desc: "arm (ARM32 硬路由/IPQ40xx/BCM4709)"
+          - arch: mipsel_24kc
+            goos: linux
+            goarch: mipsle
+            goarm: ""
+            gomips: "softfloat"
+            desc: "mipsel (MIPS32 小端硬路由/MT7621/K2P)"
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go Environment
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Compile OpenGFW & Tools
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          GOMIPS: ${{ matrix.gomips }}
+          CGO_ENABLED: 0
+        run: |
+          set -e
+          echo "Compiling OpenGFW for ${GOOS}/${GOARCH}..."
+          mkdir -p bin_out
+          go build -trimpath -ldflags "-s -w" -o bin_out/opengfw .
+          
+          echo "Compiling opengfw-adblock-tool..."
+          cd openwrt-OpenGFW/adblock-tool
+          go build -trimpath -ldflags "-s -w" -o ../../bin_out/opengfw-adblock-tool .
+          cd ../..
+          
+          chmod 755 bin_out/opengfw bin_out/opengfw-adblock-tool
+          ls -lh bin_out/
+
+      - name: Assemble & Pack OpenWrt IPK
+        run: |
+          set -e
+          PKG_VERSION="1.0.0-$(date +%Y%m%d)"
+          ARCH_NAME="${{ matrix.arch }}"
+          IPK_NAME="luci-app-opengfw_${PKG_VERSION}_${ARCH_NAME}.ipk"
+          
+          echo "Building ${IPK_NAME}..."
+          WORKDIR=$(mktemp -d)
+          mkdir -p "${WORKDIR}/ipk/data" "${WORKDIR}/ipk/control"
+          
+          # 1. debian-binary
+          echo "2.0" > "${WORKDIR}/ipk/debian-binary"
+          
+          # 2. Assemble data directory
+          DATA="${WORKDIR}/ipk/data"
+          mkdir -p "${DATA}/usr/bin" "${DATA}/etc/init.d" "${DATA}/etc/config" "${DATA}/etc/opengfw"
+          mkdir -p "${DATA}/www/luci-static/resources/view/opengfw"
+          mkdir -p "${DATA}/usr/share/luci/menu.d" "${DATA}/usr/share/rpcd/acl.d"
+          
+          # Copy binaries
+          cp bin_out/opengfw "${DATA}/usr/bin/opengfw"
+          cp bin_out/opengfw-adblock-tool "${DATA}/usr/bin/opengfw-adblock-tool"
+          
+          # Copy scripts
+          cp openwrt-OpenGFW/root/usr/bin/opengfw-status "${DATA}/usr/bin/opengfw-status"
+          cp openwrt-OpenGFW/root/usr/bin/opengfw-update-dat "${DATA}/usr/bin/opengfw-update-dat"
+          cp openwrt-OpenGFW/root/usr/bin/opengfw-geoip-helper "${DATA}/usr/bin/opengfw-geoip-helper"
+          cp openwrt-OpenGFW/root/usr/bin/opengfw-cron-update "${DATA}/usr/bin/opengfw-cron-update"
+          cp openwrt-OpenGFW/root/etc/init.d/opengfw "${DATA}/etc/init.d/opengfw"
+          
+          # Copy configs & templates
+          cp openwrt-OpenGFW/root/etc/config/opengfw "${DATA}/etc/config/opengfw"
+          cp openwrt-OpenGFW/root/etc/opengfw/rules.yaml "${DATA}/etc/opengfw/rules.yaml"
+          cp openwrt-OpenGFW/root/etc/opengfw/rules.yaml.example "${DATA}/etc/opengfw/rules.yaml.example"
+          
+          # Copy LuCI Web UI Views & Menus
+          cp -r openwrt-OpenGFW/htdocs/luci-static/resources/view/opengfw/* "${DATA}/www/luci-static/resources/view/opengfw/"
+          cp openwrt-OpenGFW/root/usr/share/luci/menu.d/luci-app-opengfw.json "${DATA}/usr/share/luci/menu.d/"
+          cp openwrt-OpenGFW/root/usr/share/rpcd/acl.d/luci-app-opengfw.json "${DATA}/usr/share/rpcd/acl.d/"
+          
+          # Fix file permissions (Standard OpenWrt permissions)
+          chmod 755 "${DATA}/usr/bin/"*
+          chmod 755 "${DATA}/etc/init.d/"*
+          chmod -R 644 "${DATA}/etc/config/"* "${DATA}/etc/opengfw/"* "${DATA}/www/"* "${DATA}/usr/share/"*
+          
+          # 3. Assemble control directory
+          CONTROL="${WORKDIR}/ipk/control"
+          cat <<EOF > "${CONTROL}/control"
+          Package: luci-app-opengfw
+          Version: ${PKG_VERSION}
+          Depends: libc, kmod-nft-core, kmod-nft-queue, nftables, ca-certificates
+          Section: luci
+          Architecture: ${ARCH_NAME}
+          Maintainer: OpenGFW Community
+          Description: High performance L7 DPI transparent stream firewall & adblock engine for OpenWrt
+          EOF
+          sed -i 's/^[ \t]*//' "${CONTROL}/control"
+          
+          cat <<'EOF' > "${CONTROL}/postinst"
+          #!/bin/sh
+          if [ -z "$IPKG_INSTROOT" ]; then
+              chmod +x /usr/bin/opengfw* /etc/init.d/opengfw 2>/dev/null || true
+              /etc/init.d/opengfw enable 2>/dev/null || true
+              rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
+              echo "[+] luci-app-opengfw installed successfully! Please refresh your browser."
+          fi
+          exit 0
+          EOF
+          chmod 755 "${CONTROL}/postinst"
+          
+          cat <<'EOF' > "${CONTROL}/prerm"
+          #!/bin/sh
+          if [ -z "$IPKG_INSTROOT" ]; then
+              /etc/init.d/opengfw stop 2>/dev/null || true
+              /etc/init.d/opengfw disable 2>/dev/null || true
+          fi
+          exit 0
+          EOF
+          chmod 755 "${CONTROL}/prerm"
+          
+          # 4. Pack into standard OpenWrt IPK format
+          mkdir -p release_pkgs
+          (cd "${CONTROL}" && tar -czf "${WORKDIR}/ipk/control.tar.gz" .)
+          (cd "${DATA}" && tar -czf "${WORKDIR}/ipk/data.tar.gz" .)
+          (cd "${WORKDIR}/ipk" && tar -czf "${GITHUB_WORKSPACE}/release_pkgs/${IPK_NAME}" debian-binary control.tar.gz data.tar.gz)
+          
+          rm -rf "${WORKDIR}"
+          ls -lh release_pkgs/
+
+      - name: Upload Architecture IPK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-opengfw-${{ matrix.arch }}
+          path: release_pkgs/*.ipk
+          retention-days: 30
+
+  build-universal:
+    name: Build Universal IPK (Architecture: all)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Pack Universal LuCI IPK
+        run: |
+          set -e
+          PKG_VERSION="1.0.0-$(date +%Y%m%d)"
+          IPK_NAME="luci-app-opengfw_${PKG_VERSION}_all.ipk"
+          
+          WORKDIR=$(mktemp -d)
+          mkdir -p "${WORKDIR}/ipk/data" "${WORKDIR}/ipk/control"
+          echo "2.0" > "${WORKDIR}/ipk/debian-binary"
+          
+          DATA="${WORKDIR}/ipk/data"
+          mkdir -p "${DATA}/usr/bin" "${DATA}/etc/init.d" "${DATA}/etc/config" "${DATA}/etc/opengfw"
+          mkdir -p "${DATA}/www/luci-static/resources/view/opengfw"
+          mkdir -p "${DATA}/usr/share/luci/menu.d" "${DATA}/usr/share/rpcd/acl.d"
+          
+          cp openwrt-OpenGFW/root/usr/bin/opengfw-status "${DATA}/usr/bin/opengfw-status"
+          cp openwrt-OpenGFW/root/usr/bin/opengfw-update-dat "${DATA}/usr/bin/opengfw-update-dat"
+          cp openwrt-OpenGFW/root/usr/bin/opengfw-geoip-helper "${DATA}/usr/bin/opengfw-geoip-helper"
+          cp openwrt-OpenGFW/root/usr/bin/opengfw-cron-update "${DATA}/usr/bin/opengfw-cron-update"
+          cp openwrt-OpenGFW/root/etc/init.d/opengfw "${DATA}/etc/init.d/opengfw"
+          cp openwrt-OpenGFW/root/etc/config/opengfw "${DATA}/etc/config/opengfw"
+          cp openwrt-OpenGFW/root/etc/opengfw/rules.yaml "${DATA}/etc/opengfw/rules.yaml"
+          cp openwrt-OpenGFW/root/etc/opengfw/rules.yaml.example "${DATA}/etc/opengfw/rules.yaml.example"
+          cp -r openwrt-OpenGFW/htdocs/luci-static/resources/view/opengfw/* "${DATA}/www/luci-static/resources/view/opengfw/"
+          cp openwrt-OpenGFW/root/usr/share/luci/menu.d/luci-app-opengfw.json "${DATA}/usr/share/luci/menu.d/"
+          cp openwrt-OpenGFW/root/usr/share/rpcd/acl.d/luci-app-opengfw.json "${DATA}/usr/share/rpcd/acl.d/"
+          
+          chmod 755 "${DATA}/usr/bin/"* "${DATA}/etc/init.d/"*
+          chmod -R 644 "${DATA}/etc/config/"* "${DATA}/etc/opengfw/"* "${DATA}/www/"* "${DATA}/usr/share/"*
+          
+          CONTROL="${WORKDIR}/ipk/control"
+          cat <<EOF > "${CONTROL}/control"
+          Package: luci-app-opengfw
+          Version: ${PKG_VERSION}
+          Depends: libc, kmod-nft-core, kmod-nft-queue, nftables, ca-certificates
+          Section: luci
+          Architecture: all
+          Maintainer: OpenGFW Community
+          Description: High performance L7 DPI transparent stream firewall & adblock engine for OpenWrt (LuCI Interface & Scripts)
+          EOF
+          sed -i 's/^[ \t]*//' "${CONTROL}/control"
+          
+          cat <<'EOF' > "${CONTROL}/postinst"
+          #!/bin/sh
+          if [ -z "$IPKG_INSTROOT" ]; then
+              chmod +x /usr/bin/opengfw* /etc/init.d/opengfw 2>/dev/null || true
+              /etc/init.d/opengfw enable 2>/dev/null || true
+              rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
+          fi
+          exit 0
+          EOF
+          chmod 755 "${CONTROL}/postinst"
+          
+          mkdir -p release_pkgs
+          (cd "${CONTROL}" && tar -czf "${WORKDIR}/ipk/control.tar.gz" .)
+          (cd "${DATA}" && tar -czf "${WORKDIR}/ipk/data.tar.gz" .)
+          (cd "${WORKDIR}/ipk" && tar -czf "${GITHUB_WORKSPACE}/release_pkgs/${IPK_NAME}" debian-binary control.tar.gz data.tar.gz)
+          
+          rm -rf "${WORKDIR}"
+          ls -lh release_pkgs/
+
+      - name: Upload Universal IPK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-opengfw-all
+          path: release_pkgs/*.ipk
+          retention-days: 30
+
+  release:
+    name: Auto Release IPK Packages
+    needs: [build-ipk, build-universal]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download All IPK Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded_artifacts/
+
+      - name: Prepare Release Directory & Checksums
+        run: |
+          mkdir -p dist_release
+          find downloaded_artifacts/ -type f -name "*.ipk" -exec cp {} dist_release/ \;
+          cd dist_release
+          sha256sum *.ipk > sha256sums.txt
+          echo "### Generated IPK Packages:"
+          ls -lh
+          cat sha256sums.txt
+
+      - name: Publish or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: latest
+          name: "OpenGFW OpenWrt Plugins Auto-Build"
+          body: |
+            ## OpenGFW for OpenWrt 插件自动编译产物
+
+            本发布包由 GitHub Actions 自动编译构建，**自适应所有 OpenWrt / ImmortalWrt / iStoreOS 系统版本**。
+            
+            ### 📦 安装包选型指南：
+            - **x86_64 软路由**（Intel/AMD 处理器，如 N100 / J4125 / i3 / i5 / 常见工控机软路由）：
+              👉 请下载：`luci-app-opengfw_*_x86_64.ipk`
+            - **ARM64 软路由/硬路由**（树莓派 4/5、NanoPi R2S/R4S/R5S/R6S、RK3399/RK3568/RK3588、MT798x 等）：
+              👉 请下载：`luci-app-opengfw_*_aarch64_generic.ipk`
+            - **ARM32 硬路由**（IPQ40xx 系列等）：
+              👉 请下载：`luci-app-opengfw_*_arm_cortex-a7_neon-vfpv4.ipk`
+            - **MIPS 小端路由**（MT7621、斐讯 K2P、新路由 3 等）：
+              👉 请下载：`luci-app-opengfw_*_mipsel_24kc.ipk`
+            - **纯 LuCI 界面包**（所有平台通用，需自行放置对应架构二进制）：
+              👉 请下载：`luci-app-opengfw_*_all.ipk`
+
+            ### 🚀 安装方法：
+            1. 登录 OpenWrt 管理后台，进入 **【系统】 -> 【软件包】 -> 【上传软件包】**；
+            2. 选择下载的 `.ipk` 文件，点击 **【安装】**；
+            3. 安装完毕后刷新浏览器页面，在导航菜单 **【服务】 -> 【OpenGFW 防火墙】** 即可开箱即用！
+          files: |
+            dist_release/*.ipk
+            dist_release/sha256sums.txt
+          prerelease: false
+          draft: false

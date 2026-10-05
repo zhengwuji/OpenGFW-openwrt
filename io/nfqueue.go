@@ -47,11 +47,15 @@ func generateNftRules(local, rst bool) (*nftTableSpec, error) {
 		}
 	} else {
 		table.Chains = []nftChainSpec{
+			{Chain: "PREROUTING", Header: "type filter hook prerouting priority mangle; policy accept;"},
 			{Chain: "FORWARD", Header: "type filter hook forward priority filter; policy accept;"},
 		}
 	}
 	for i := range table.Chains {
 		c := &table.Chains[i]
+		if c.Chain == "PREROUTING" {
+			c.Rules = append(c.Rules, "iifname \"lo\" accept")
+		}
 		c.Rules = append(c.Rules, "meta mark $ACCEPT_CTMARK ct mark set $ACCEPT_CTMARK") // Bypass protected connections
 		c.Rules = append(c.Rules, "ct mark $ACCEPT_CTMARK counter accept")
 		if rst {
@@ -67,22 +71,35 @@ func generateIptRules(local, rst bool) ([]iptRule, error) {
 	if local && rst {
 		return nil, errors.New("tcp rst is not supported in local mode")
 	}
-	var chains []string
-	if local {
-		chains = []string{"INPUT", "OUTPUT"}
-	} else {
-		chains = []string{"FORWARD"}
+	type chainTarget struct {
+		table string
+		chain string
 	}
-	rules := make([]iptRule, 0, 4*len(chains))
-	for _, chain := range chains {
-		// Bypass protected connections
-		rules = append(rules, iptRule{"filter", chain, []string{"-m", "mark", "--mark", strconv.Itoa(nfqueueConnMarkAccept), "-j", "CONNMARK", "--set-mark", strconv.Itoa(nfqueueConnMarkAccept)}})
-		rules = append(rules, iptRule{"filter", chain, []string{"-m", "connmark", "--mark", strconv.Itoa(nfqueueConnMarkAccept), "-j", "ACCEPT"}})
-		if rst {
-			rules = append(rules, iptRule{"filter", chain, []string{"-p", "tcp", "-m", "connmark", "--mark", strconv.Itoa(nfqueueConnMarkDrop), "-j", "REJECT", "--reject-with", "tcp-reset"}})
+	var targets []chainTarget
+	if local {
+		targets = []chainTarget{
+			{"filter", "INPUT"},
+			{"filter", "OUTPUT"},
 		}
-		rules = append(rules, iptRule{"filter", chain, []string{"-m", "connmark", "--mark", strconv.Itoa(nfqueueConnMarkDrop), "-j", "DROP"}})
-		rules = append(rules, iptRule{"filter", chain, []string{"-j", "NFQUEUE", "--queue-num", strconv.Itoa(nfqueueNum), "--queue-bypass"}})
+	} else {
+		targets = []chainTarget{
+			{"mangle", "PREROUTING"},
+			{"filter", "FORWARD"},
+		}
+	}
+	rules := make([]iptRule, 0, 5*len(targets))
+	for _, t := range targets {
+		if t.chain == "PREROUTING" {
+			rules = append(rules, iptRule{t.table, t.chain, []string{"-i", "lo", "-j", "ACCEPT"}})
+		}
+		// Bypass protected connections
+		rules = append(rules, iptRule{t.table, t.chain, []string{"-m", "mark", "--mark", strconv.Itoa(nfqueueConnMarkAccept), "-j", "CONNMARK", "--set-mark", strconv.Itoa(nfqueueConnMarkAccept)}})
+		rules = append(rules, iptRule{t.table, t.chain, []string{"-m", "connmark", "--mark", strconv.Itoa(nfqueueConnMarkAccept), "-j", "ACCEPT"}})
+		if rst {
+			rules = append(rules, iptRule{t.table, t.chain, []string{"-p", "tcp", "-m", "connmark", "--mark", strconv.Itoa(nfqueueConnMarkDrop), "-j", "REJECT", "--reject-with", "tcp-reset"}})
+		}
+		rules = append(rules, iptRule{t.table, t.chain, []string{"-m", "connmark", "--mark", strconv.Itoa(nfqueueConnMarkDrop), "-j", "DROP"}})
+		rules = append(rules, iptRule{t.table, t.chain, []string{"-j", "NFQUEUE", "--queue-num", strconv.Itoa(nfqueueNum), "--queue-bypass"}})
 	}
 
 	return rules, nil

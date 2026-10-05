@@ -1,0 +1,14 @@
+#!/bin/sh
+
+chmod +x /etc/init.d/opengfw 2>/dev/null
+chmod +x /usr/bin/opengfw* 2>/dev/null
+
+# Register weekly cron update task (Monday 04:00 AM) if not present
+mkdir -p /etc/crontabs
+touch /etc/crontabs/root
+if ! grep -q "opengfw-cron-update" /etc/crontabs/root 2>/dev/null; then
+    echo "0 4 * * 1 /usr/bin/opengfw-cron-update >/dev/null 2>&1" >> /etc/crontabs/root
+    /etc/init.d/cron restart >/dev/null 2>&1
+fi
+
+exit 0

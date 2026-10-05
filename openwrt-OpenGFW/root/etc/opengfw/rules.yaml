@@ -1,0 +1,120 @@
+# ==============================================================================
+# OpenGFW 流量过滤与深度包检测 (DPI) 规则集（高并发与低延迟优化版）
+# 
+# 规则说明：
+# - 规则按顺序自上而下匹配，一旦匹配到带有 action 的规则即执行对应处置并终止判定
+# - 处置动作 (action) 可选值:
+#     allow:   放行流量并标记该连接（后续包内核直通，低 CPU 占用）
+#     block:   直接阻断该连接
+#     drop:    静默丢弃该数据包
+#     modify:  修改数据包内容（如将广告 DNS 解析结果改为 0.0.0.0）
+# - 仅审计记录模式 (log-only):
+#     不填 action，设置 log: true，则仅在 /var/log/opengfw.log 输出审计日志，继续向下匹配！
+# - 修改本文件后，在网页端点击【保存并立即热重载】或执行 killall -HUP opengfw 即可秒级热生效！
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 0. 用户自定义白名单（最高优先级，直接内核直通，杜绝误杀）
+# ------------------------------------------------------------------------------
+- name: allow whitelist tls
+  action: allow
+  expr: tls != nil && tls.sni != nil && geosite(tls.sni, "whitelist")
+
+- name: allow whitelist http
+  action: allow
+  expr: http != nil && http.host != nil && geosite(http.host, "whitelist")
+
+- name: allow whitelist quic
+  action: allow
+  expr: quic != nil && quic.sni != nil && geosite(quic.sni, "whitelist")
+
+- name: allow whitelist dns
+  action: allow
+  expr: dns != nil && dns.name != nil && geosite(dns.name, "whitelist")
+
+# ------------------------------------------------------------------------------
+# 1. 核心基础设施与管理端口放行（确保 SSH 与后台管理绝对安全）
+# ------------------------------------------------------------------------------
+- name: allow ssh
+  action: allow
+  expr: port.dst == 22 || port.src == 22
+
+- name: allow router web management
+  action: allow
+  expr: (port.dst == 80 || port.dst == 443) && (cidr(ip.dst, "10.0.0.0/8") || cidr(ip.dst, "172.16.0.0/12") || cidr(ip.dst, "192.168.0.0/16"))
+
+# ------------------------------------------------------------------------------
+# 2. DNS 规避防范（阻断 DoT 853 端口与公共 DoH，迫使设备使用路由器本地安全 DNS）
+# ------------------------------------------------------------------------------
+- name: block dot 853
+  action: block
+  log: true
+  expr: port.dst == 853
+
+- name: block doh providers
+  action: block
+  log: true
+  expr: tls != nil && tls.sni != nil && geosite(tls.sni, "category-doh")
+
+# ------------------------------------------------------------------------------
+# 3. 广告拦截规则组（默认已启用，路由器底层免插件过滤）
+# ------------------------------------------------------------------------------
+- name: block ads tls
+  action: block
+  log: true
+  expr: tls != nil && tls.sni != nil && (geosite(tls.sni, "category-ads-all") || geosite(tls.sni, "adblockfilters"))
+
+- name: block ads http
+  action: block
+  log: true
+  expr: http != nil && http.host != nil && (geosite(http.host, "category-ads-all") || geosite(http.host, "adblockfilters"))
+
+- name: block ads quic
+  action: block
+  log: true
+  expr: quic != nil && quic.sni != nil && (geosite(quic.sni, "category-ads-all") || geosite(quic.sni, "adblockfilters"))
+
+# 将广告域名的 DNS 应答解析修改为 0.0.0.0（温和黑洞）
+- name: sinkhole ads dns
+  action: modify
+  log: true
+  expr: dns != nil && dns.qr && dns.name != nil && (geosite(dns.name, "category-ads-all") || geosite(dns.name, "adblockfilters"))
+  modifier:
+    name: dns
+    args:
+      a: "0.0.0.0"
+
+# ------------------------------------------------------------------------------
+# 4. 流量审计与观察模式（在日志中打印所有内网终端访问的 TLS 域名）
+# ------------------------------------------------------------------------------
+- name: observe tls sni
+  log: true
+  expr: tls != nil && tls.sni != ""
+
+# ------------------------------------------------------------------------------
+# 5. 代理与全加密混淆流量检测（如需禁止内网违规建立代理，取消注释启用）
+# ------------------------------------------------------------------------------
+# - name: block fully-encrypted
+#   action: block
+#   log: true
+#   expr: fet != nil && fet.yes
+
+# - name: block trojan
+#   action: block
+#   log: true
+#   expr: trojan != nil && trojan.yes
+
+# ------------------------------------------------------------------------------
+# 6. 家长控制与特定应用/域名管控模板（按需开启）
+# ------------------------------------------------------------------------------
+# 示例：阻断成人色情分类网站
+# - name: block adult content
+#   action: block
+#   log: true
+#   expr: (tls != nil && geosite(tls.sni, "category-porn")) || (http != nil && geosite(http.host, "category-porn"))
+
+# 示例：阻断特定关键词
+# - name: block keywords
+#   action: block
+#   log: true
+#   expr: (tls != nil && (tls.sni contains "casino" || tls.sni contains "bet")) || (http != nil && (http.host contains "casino" || http.host contains "bet"))

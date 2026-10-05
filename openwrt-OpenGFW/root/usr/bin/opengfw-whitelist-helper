@@ -1,0 +1,67 @@
+#!/bin/sh
+# OpenGFW 白名单管理工具
+# 用法:
+#   opengfw-whitelist-helper add <domain>     # 添加域名到白名单并热重载
+#   opengfw-whitelist-helper remove <domain>  # 从白名单移除域名并热重载
+#   opengfw-whitelist-helper list             # 列出所有白名单域名 (JSON)
+#   opengfw-whitelist-helper sync             # 重新将白名单同步进 geosite.dat
+
+WL_FILE="/etc/opengfw/whitelist.txt"
+GEOSITE="/etc/opengfw/geosite.dat"
+ADBLOCK_TOOL="/usr/bin/opengfw-adblock-tool"
+
+mkdir -p /etc/opengfw
+[ -f "$WL_FILE" ] || touch "$WL_FILE"
+
+reload_opengfw() {
+    if [ -x "$ADBLOCK_TOOL" ] && [ -f "$GEOSITE" ]; then
+        "$ADBLOCK_TOOL" import -name whitelist -file "$WL_FILE" -geosite "$GEOSITE" >/dev/null 2>&1
+    fi
+    killall -HUP opengfw 2>/dev/null || /etc/init.d/opengfw reload >/dev/null 2>&1
+}
+
+case "$1" in
+    add)
+        DOMAIN=$(echo "$2" | tr 'A-Z' 'a-z' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/^\*\.//')
+        if [ -z "$DOMAIN" ]; then
+            echo '{"success":false,"message":"域名不能为空"}'
+            exit 1
+        fi
+        if grep -qxF "$DOMAIN" "$WL_FILE" 2>/dev/null; then
+            echo "{\"success\":true,\"message\":\"域名已存在于白名单\",\"domain\":\"$DOMAIN\"}"
+            exit 0
+        fi
+        echo "$DOMAIN" >> "$WL_FILE"
+        reload_opengfw
+        echo "{\"success\":true,\"message\":\"已成功添加至白名单并热生效\",\"domain\":\"$DOMAIN\"}"
+        ;;
+    remove)
+        DOMAIN=$(echo "$2" | tr 'A-Z' 'a-z' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        if [ -n "$DOMAIN" ] && [ -f "$WL_FILE" ]; then
+            sed -i "/^$DOMAIN$/d" "$WL_FILE"
+            reload_opengfw
+        fi
+        echo "{\"success\":true,\"message\":\"已从白名单移除\",\"domain\":\"$DOMAIN\"}"
+        ;;
+    list)
+        echo -n '{"whitelist":['
+        first=1
+        while IFS= read -r line || [ -n "$line" ]; do
+            line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            [ -z "$line" ] && continue
+            case "$line" in \#*) continue ;; esac
+            [ $first -eq 0 ] && echo -n ','
+            echo -n "\"$line\""
+            first=0
+        done < "$WL_FILE"
+        echo ']}'
+        ;;
+    sync)
+        reload_opengfw
+        echo '{"success":true,"message":"白名单已同步至 geosite.dat"}'
+        ;;
+    *)
+        echo "Usage: $0 {add <domain>|remove <domain>|list|sync}"
+        exit 1
+        ;;
+esac

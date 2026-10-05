@@ -1,0 +1,213 @@
+#!/bin/sh
+# OpenGFW 全球国家/地区 IP 拦截辅助管理工具
+# 支持黑白名单模式切换、国家代码注入、自动更新 Cron 定时任务配置
+
+RULES_FILE="/etc/opengfw/rules.yaml"
+GEOIP_FILE="/etc/opengfw/geoip.dat"
+UPDATE_FILE="/etc/opengfw/last_update.txt"
+CRON_FILE="/etc/crontabs/root"
+
+MARKER_START="# --- BEGIN_GEOIP_RULES ---"
+MARKER_END="# --- END_GEOIP_RULES ---"
+
+get_info() {
+    local enabled mode direction countries autoupdate freq last_update fsize custom_urls custom_ips_count
+
+    enabled=$(uci -q get opengfw.geoip.enabled || echo "0")
+    mode=$(uci -q get opengfw.geoip.mode || echo "blacklist")
+    direction=$(uci -q get opengfw.geoip.direction || echo "src")
+    countries=$(uci -q get opengfw.geoip.countries || echo "")
+    custom_urls=$(uci -q get opengfw.geoip.custom_urls || echo "")
+    autoupdate=$(uci -q get opengfw.geoip.autoupdate || echo "1")
+    freq=$(uci -q get opengfw.geoip.freq || echo "weekly")
+
+    [ -f "$UPDATE_FILE" ] && last_update=$(cat "$UPDATE_FILE" 2>/dev/null) || last_update="暂未更新"
+    [ -f "$GEOIP_FILE" ] && fsize=$(ls -lh "$GEOIP_FILE" 2>/dev/null | awk '{print $5}') || fsize="未下载"
+
+    custom_ips_count=0
+    if [ -x "/usr/bin/opengfw-adblock-tool" ] && [ -f "$GEOIP_FILE" ]; then
+        custom_ips_count=$(/usr/bin/opengfw-adblock-tool list-ip --geoip "$GEOIP_FILE" 2>/dev/null | grep -o '"name":"custom_ips","count":[0-9]*' | grep -o '[0-9]*$' || echo 0)
+    fi
+    [ -z "$custom_ips_count" ] && custom_ips_count=0
+
+    local url_count=0
+    for u in $custom_urls; do
+        [ -n "$u" ] && url_count=$((url_count + 1))
+    done
+
+    cat <<EOF
+{
+  "enabled": $([ "$enabled" = "1" ] && echo "true" || echo "false"),
+  "mode": "$mode",
+  "direction": "$direction",
+  "countries": "$countries",
+  "custom_urls_count": $url_count,
+  "custom_ips_count": $custom_ips_count,
+  "autoupdate": $([ "$autoupdate" = "1" ] && echo "true" || echo "false"),
+  "freq": "$freq",
+  "last_update": "$last_update",
+  "file_size": "$fsize"
+}
+EOF
+}
+
+setup_cron() {
+    local autoupdate freq cron_expr
+    autoupdate=$(uci -q get opengfw.geoip.autoupdate || echo "1")
+    freq=$(uci -q get opengfw.geoip.freq || echo "weekly")
+
+    mkdir -p /etc/crontabs
+    touch "$CRON_FILE"
+    # 清理旧的 opengfw-autoupdate 任务
+    sed -i '/opengfw-autoupdate/d' "$CRON_FILE" 2>/dev/null
+
+    if [ "$autoupdate" = "1" ]; then
+        case "$freq" in
+            "daily")
+                cron_expr="0 3 * * *"
+                ;;
+            "monthly")
+                cron_expr="0 3 1 * *"
+                ;;
+            *)
+                cron_expr="0 3 * * 0"
+                ;;
+        esac
+        echo "$cron_expr /usr/bin/opengfw-update-dat >/dev/null 2>&1 # opengfw-autoupdate" >> "$CRON_FILE"
+        echo "[+] 已配置定时自动下载新 IP 段: $cron_expr"
+    else
+        echo "[+] 已关闭自动定时下载 IP 段"
+    fi
+    /etc/init.d/cron restart >/dev/null 2>&1 || true
+}
+
+sync_custom_ips() {
+    local raw_urls
+    raw_urls=$(uci -q get opengfw.geoip.custom_urls || echo "")
+    if [ -z "$raw_urls" ]; then
+        echo "[-] 未配置任何自定义 IP 订阅链接。"
+        return 0
+    fi
+    echo "[*] 检测到自定义 IP 订阅链接，开始下载并同步..."
+    local url_str=""
+    for u in $raw_urls; do
+        [ -z "$u" ] && continue
+        if [ -z "$url_str" ]; then
+            url_str="$u"
+        else
+            url_str="$url_str,$u"
+        fi
+    done
+    /usr/bin/opengfw-adblock-tool import-ip --url "$url_str" --name "custom_ips"
+}
+
+apply_rules() {
+    local enabled mode direction raw_countries raw_custom_urls
+    enabled=$(uci -q get opengfw.geoip.enabled || echo "0")
+    mode=$(uci -q get opengfw.geoip.mode || echo "blacklist")
+    direction=$(uci -q get opengfw.geoip.direction || echo "src")
+    raw_countries=$(uci -q get opengfw.geoip.countries || echo "")
+    raw_custom_urls=$(uci -q get opengfw.geoip.custom_urls || echo "")
+
+    # 先从 rules.yaml 中移除旧的标记块
+    if [ -f "$RULES_FILE" ]; then
+        sed -i "/$MARKER_START/,/$MARKER_END/d" "$RULES_FILE" 2>/dev/null
+    fi
+
+    if [ "$enabled" = "1" ] && { [ -n "$raw_countries" ] || [ -n "$raw_custom_urls" ]; }; then
+        local block_snippet=""
+        block_snippet="$MARKER_START\n# 全球国家/地区与自定义 IP 拦截规则 (由控制面板自动生成，请勿手动编辑该块)\n"
+
+        if [ "$mode" = "whitelist" ]; then
+            # 白名单模式：放行内网私网地址与指定国家，其余全部阻断
+            block_snippet="${block_snippet}- name: 地区白名单-放行私网网段\n  action: allow\n  expr: cidr(ip.dst, \"10.0.0.0/8\") || cidr(ip.dst, \"172.16.0.0/12\") || cidr(ip.dst, \"192.168.0.0/16\") || cidr(ip.dst, \"127.0.0.0/8\")\n\n"
+            for c in $raw_countries; do
+                c_low=$(echo "$c" | tr 'A-Z' 'a-z' | tr -d ' ,')
+                [ -z "$c_low" ] && continue
+                block_snippet="${block_snippet}- name: 地区白名单-放行${c}\n  action: allow\n  expr: geoip(ip.dst, \"${c_low}\")\n\n"
+            done
+            block_snippet="${block_snippet}- name: 地区白名单-阻断未列出的所有其他境外IP\n  action: block\n  log: true\n  expr: true\n\n"
+        else
+            # 黑名单模式：阻断列表中所有国家
+            for c in $raw_countries; do
+                c_low=$(echo "$c" | tr 'A-Z' 'a-z' | tr -d ' ,')
+                [ -z "$c_low" ] && continue
+                local expr_str=""
+                case "$direction" in
+                    "src")
+                        expr_str="geoip(ip.src, \"${c_low}\")"
+                        ;;
+                    "both")
+                        expr_str="geoip(ip.dst, \"${c_low}\") || geoip(ip.src, \"${c_low}\")"
+                        ;;
+                    *)
+                        expr_str="geoip(ip.dst, \"${c_low}\")"
+                        ;;
+                esac
+                block_snippet="${block_snippet}- name: 地区黑名单-阻断${c}\n  action: block\n  log: true\n  expr: ${expr_str}\n\n"
+            done
+        fi
+
+        # 自定义 IP 网段规则阻断
+        if [ -n "$raw_custom_urls" ] || [ -f "$GEOIP_FILE" ]; then
+            local custom_rule=""
+            case "$direction" in
+                "src")
+                    custom_rule="- name: 阻断自定义IP-入站\n  action: block\n  log: true\n  expr: geoip(ip.src, \"custom_ips\")\n\n"
+                    ;;
+                "both")
+                    custom_rule="- name: 阻断自定义IP-入站\n  action: block\n  log: true\n  expr: geoip(ip.src, \"custom_ips\")\n\n- name: 阻断自定义IP-出站\n  action: block\n  log: true\n  expr: geoip(ip.dst, \"custom_ips\")\n\n"
+                    ;;
+                *)
+                    custom_rule="- name: 阻断自定义IP-出站\n  action: block\n  log: true\n  expr: geoip(ip.dst, \"custom_ips\")\n\n"
+                    ;;
+            esac
+            block_snippet="${block_snippet}${custom_rule}"
+        fi
+
+        block_snippet="${block_snippet}\n$MARKER_END"
+        # 写入临时文件并通过 awk 优先插入到核心基础设施之前，确保入站黑名单优先于管理端口放行
+        printf "%b\n" "$block_snippet" > /tmp/geoip_snippet.yaml
+        if grep -q "# 1. 核心基础设施" "$RULES_FILE" 2>/dev/null; then
+            awk 'NR==FNR{s=s $0 "\n"; next} /# 1. 核心基础设施/{printf "%s\n", s} {print}' /tmp/geoip_snippet.yaml "$RULES_FILE" > /tmp/rules.tmp && mv /tmp/rules.tmp "$RULES_FILE"
+            rm -f /tmp/geoip_snippet.yaml
+        else
+            cat /tmp/geoip_snippet.yaml >> "$RULES_FILE"
+            rm -f /tmp/geoip_snippet.yaml
+        fi
+        echo "[+] 全球国家与自定义 IP 拦截规则已生成并优先注入 rules.yaml"
+
+        # 如果有自定义订阅链接，执行一次下载同步
+        if [ -n "$raw_custom_urls" ]; then
+            sync_custom_ips
+        fi
+    else
+        echo "[+] 未启用 IP 拦截或列表为空，已清除相关拦截规则"
+    fi
+
+    # 热重载 OpenGFW
+    /etc/init.d/opengfw reload >/dev/null 2>&1 || true
+    echo "[+] 已向 OpenGFW 发送热重载信号"
+
+    # 同步配置定时任务
+    setup_cron
+}
+
+case "$1" in
+    "get")
+        get_info
+        ;;
+    "apply")
+        apply_rules
+        ;;
+    "sync-custom-ips")
+        sync_custom_ips
+        ;;
+    "cron")
+        setup_cron
+        ;;
+    *)
+        echo "用法: $0 {get|apply|sync-custom-ips|cron}"
+        ;;
+esac
+
