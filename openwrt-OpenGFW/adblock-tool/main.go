@@ -478,7 +478,7 @@ func ensureIPRuleInYaml(rulesPath string, category string) error {
   action: block
   log: true
   expr: geoip(ip.src, %q)
-`, category, category, category, category, category, category)
+`, category, category, category, category, category)
 
 	newContent := strings.TrimRight(content, " \t\r\n") + "\n" + ruleSnippet
 	return os.WriteFile(rulesPath, []byte(newContent), 0644)

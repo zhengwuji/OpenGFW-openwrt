@@ -186,7 +186,7 @@ jobs:
           retention-days: 30
 
   build-universal:
-    name: Build Universal IPK (Architecture: all)
+    name: "Build Universal IPK (Architecture: all)"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Source Code
