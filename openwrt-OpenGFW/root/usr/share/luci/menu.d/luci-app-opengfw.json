@@ -48,5 +48,13 @@
 			"type": "view",
 			"path": "opengfw/log"
 		}
+	},
+	"admin/services/opengfw/custom": {
+		"title": "自定义拦截",
+		"order": 35,
+		"action": {
+			"type": "view",
+			"path": "opengfw/custom"
+		}
 	}
 }

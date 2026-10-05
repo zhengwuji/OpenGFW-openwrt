@@ -1,0 +1,158 @@
+#!/bin/sh
+# OpenGFW 自定义域名与 IP 拦截管理助手
+# 管理 /etc/opengfw/custom_rules.json 并自动同步编译至 /etc/opengfw/rules.yaml
+
+CONF_DIR="/etc/opengfw"
+CUSTOM_JSON="${CONF_DIR}/custom_rules.json"
+RULES_FILE="${CONF_DIR}/rules.yaml"
+
+mkdir -p "$CONF_DIR"
+
+if [ ! -f "$CUSTOM_JSON" ]; then
+    echo "[]" > "$CUSTOM_JSON"
+fi
+
+get_json() {
+    if [ -f "$CUSTOM_JSON" ]; then
+        cat "$CUSTOM_JSON"
+    else
+        echo "[]"
+    fi
+}
+
+apply_rules() {
+    if [ ! -f "$RULES_FILE" ]; then
+        touch "$RULES_FILE"
+    fi
+
+    # 生成自定义规则 YAML 片段
+    local tmp_yaml="/tmp/opengfw_custom_block.yaml"
+    cat <<'EOF' > "$tmp_yaml"
+# --- BEGIN_CUSTOM_RULES ---
+# 自定义域名与 IP 拦截清单 (由【自定义拦截】控制台自动生成，支持热重载)
+EOF
+
+    # 使用 awk / python / sed 解析 JSON 并生成 YAML 规则
+    python3 -c "
+import json, re, sys
+
+try:
+    with open('${CUSTOM_JSON}', 'r', encoding='utf-8') as f:
+        rules = json.load(f)
+except Exception as e:
+    rules = []
+
+for r in rules:
+    if not r.get('enabled', True):
+        continue
+    rtype = r.get('type', 'domain').lower()
+    val = r.get('value', '').strip()
+    if not val:
+        continue
+    action = r.get('action', 'block').lower()
+    if action not in ['allow', 'block', 'drop']:
+        action = 'block'
+    direction = r.get('direction', 'both').lower()
+    comment = r.get('comment', '').replace('\"', '')
+
+    safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', val)[:30]
+    rule_name = f'自定义{action}-{safe_name}'
+    if comment:
+        rule_name += f' ({comment})'
+
+    if rtype == 'domain':
+        val_clean = val.lower().lstrip('.')
+        # 匹配根域名及其所有子域名，覆盖 TLS SNI, HTTP Host, DNS 查询及 QUIC
+        expr = f'(tls != nil && (tls.sni == \"{val_clean}\" || tls.sni endsWith \".{val_clean}\")) || (http != nil && (http.host == \"{val_clean}\" || http.host endsWith \".{val_clean}\")) || (dns != nil && (dns.name == \"{val_clean}\" || dns.name endsWith \".{val_clean}\")) || (quic != nil && (quic.sni == \"{val_clean}\" || quic.sni endsWith \".{val_clean}\"))'
+    else:
+        # IP / CIDR 处理
+        cidr_val = val
+        if '/' not in cidr_val:
+            if ':' in cidr_val:
+                cidr_val += '/128'
+            else:
+                cidr_val += '/32'
+        
+        if direction == 'inbound':
+            expr = f'cidr(ip.src, \"{cidr_val}\")'
+        elif direction == 'outbound':
+            expr = f'cidr(ip.dst, \"{cidr_val}\")'
+        else: # both
+            expr = f'cidr(ip.dst, \"{cidr_val}\") || cidr(ip.src, \"{cidr_val}\")'
+
+    print(f'- name: \"{rule_name}\"')
+    print(f'  action: {action}')
+    print(f'  log: true')
+    print(f'  expr: {expr}')
+    print('')
+" >> "$tmp_yaml" 2>/dev/null
+
+    echo "# --- END_CUSTOM_RULES ---" >> "$tmp_yaml"
+
+    # 将生成的片段原子合并入 rules.yaml
+    python3 -c "
+with open('${tmp_yaml}', 'r', encoding='utf-8') as f:
+    new_block = f.read()
+
+rules_file = '${RULES_FILE}'
+try:
+    with open(rules_file, 'r', encoding='utf-8') as f:
+        content = f.read()
+except:
+    content = ''
+
+if '# --- BEGIN_CUSTOM_RULES ---' in content and '# --- END_CUSTOM_RULES ---' in content:
+    # 替换已有区块
+    pattern_start = '# --- BEGIN_CUSTOM_RULES ---'
+    pattern_end = '# --- END_CUSTOM_RULES ---'
+    p1 = content.find(pattern_start)
+    p2 = content.find(pattern_end) + len(pattern_end)
+    new_content = content[:p1] + new_block + content[p2:]
+else:
+    # 插入到最顶层（或者用户白名单下方）
+    if '# 0. 用户自定义白名单' in content:
+        idx = content.find('# 0. 用户自定义白名单')
+        new_content = content[:idx] + new_block + '\n\n' + content[idx:]
+    else:
+        new_content = new_block + '\n\n' + content
+
+with open(rules_file, 'w', encoding='utf-8') as f:
+    f.write(new_content)
+"
+    rm -f "$tmp_yaml"
+
+    # 执行平滑热重载 (无需重启守护进程)
+    local pid=$(pidof opengfw | awk '{print $1}')
+    if [ -n "$pid" ]; then
+        kill -HUP "$pid" 2>/dev/null
+        logger -t opengfw "Custom rules applied & reloaded via SIGHUP (PID: $pid)"
+    fi
+
+    echo "{\"status\": \"ok\", \"message\": \"自定义规则已成功编译并热重载生效！\"}"
+}
+
+case "$1" in
+    get)
+        get_json
+        ;;
+    apply)
+        apply_rules
+        ;;
+    set)
+        # 从标准输入或 $2 写入并应用
+        if [ -n "$2" ]; then
+            echo "$2" > "$CUSTOM_JSON"
+        else
+            cat > "$CUSTOM_JSON"
+        fi
+        apply_rules
+        ;;
+    clear)
+        echo "[]" > "$CUSTOM_JSON"
+        apply_rules
+        ;;
+    *)
+        echo "Usage: $0 {get|apply|set|clear}"
+        exit 1
+        ;;
+esac

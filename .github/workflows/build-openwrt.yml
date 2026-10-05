@@ -122,6 +122,7 @@ jobs:
           cp openwrt-OpenGFW/root/usr/bin/opengfw-status "${DATA}/usr/bin/opengfw-status"
           cp openwrt-OpenGFW/root/usr/bin/opengfw-update-dat "${DATA}/usr/bin/opengfw-update-dat"
           cp openwrt-OpenGFW/root/usr/bin/opengfw-geoip-helper "${DATA}/usr/bin/opengfw-geoip-helper"
+          cp openwrt-OpenGFW/root/usr/bin/opengfw-custom-helper "${DATA}/usr/bin/opengfw-custom-helper"
           cp openwrt-OpenGFW/root/usr/bin/opengfw-cron-update "${DATA}/usr/bin/opengfw-cron-update"
           cp openwrt-OpenGFW/root/etc/init.d/opengfw "${DATA}/etc/init.d/opengfw"
           
@@ -216,6 +217,7 @@ jobs:
           cp openwrt-OpenGFW/root/usr/bin/opengfw-status "${DATA}/usr/bin/opengfw-status"
           cp openwrt-OpenGFW/root/usr/bin/opengfw-update-dat "${DATA}/usr/bin/opengfw-update-dat"
           cp openwrt-OpenGFW/root/usr/bin/opengfw-geoip-helper "${DATA}/usr/bin/opengfw-geoip-helper"
+          cp openwrt-OpenGFW/root/usr/bin/opengfw-custom-helper "${DATA}/usr/bin/opengfw-custom-helper"
           cp openwrt-OpenGFW/root/usr/bin/opengfw-cron-update "${DATA}/usr/bin/opengfw-cron-update"
           cp openwrt-OpenGFW/root/etc/init.d/opengfw "${DATA}/etc/init.d/opengfw"
           cp openwrt-OpenGFW/root/etc/config/opengfw "${DATA}/etc/config/opengfw"

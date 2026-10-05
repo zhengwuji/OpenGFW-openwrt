@@ -72,15 +72,23 @@ return view.extend({
 			// 分类快捷标签过滤
 			if (currentFilterMode === 'ad') {
 				lines = lines.filter(function(line) {
-					return line.indexOf('广告') !== -1 || line.indexOf('adblock') !== -1;
+					return /(block ads|adblock|广告|ads|sinkhole)/i.test(line);
 				});
 			} else if (currentFilterMode === 'geo') {
 				lines = lines.filter(function(line) {
-					return line.indexOf('地区') !== -1 || line.indexOf('custom_ips') !== -1 || line.indexOf('自定义IP') !== -1 || line.indexOf('geoip') !== -1;
+					return /(地区|geoip|custom_ip|自定义|ip阻断|ip黑名单|block.*ip)/i.test(line);
+				});
+			} else if (currentFilterMode === 'blocked') {
+				lines = lines.filter(function(line) {
+					return /(action":\s*"block"|action":\s*"drop"|action":\s*"reject"|block|drop|reject|阻断|拦截)/i.test(line);
+				});
+			} else if (currentFilterMode === 'sni') {
+				lines = lines.filter(function(line) {
+					return /(observe|sni|host|dns)/i.test(line);
 				});
 			} else if (currentFilterMode === 'system') {
 				lines = lines.filter(function(line) {
-					return line.indexOf('engine') !== -1 || line.indexOf('worker') !== -1 || line.indexOf('started') !== -1;
+					return /(engine|worker|started|ruleset|loaded|init)/i.test(line);
 				});
 			}
 
@@ -117,8 +125,10 @@ return view.extend({
 
 		let filterBtnGroup = E('div', { 'style': 'display: flex; flex-wrap: wrap; gap: 6px;' }, [
 			createFilterBtn(_('📋 全部日志'), 'all', true),
+			createFilterBtn(_('🛑 所有阻断拦截'), 'blocked', false),
 			createFilterBtn(_('🛡️ 广告拦截'), 'ad', false),
 			createFilterBtn(_('🌐 地区/IP阻断'), 'geo', false),
+			createFilterBtn(_('👁️ 访问域名审计'), 'sni', false),
 			createFilterBtn(_('⚙️ 系统核心'), 'system', false)
 		]);
 
