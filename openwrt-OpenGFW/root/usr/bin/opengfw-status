@@ -66,6 +66,14 @@ ADS_BLOCKED=0
 IPS_BLOCKED=0
 TOTAL_BLOCKED=0
 RECENT_EVENTS="[]"
+TOP_DOMAINS="[]"
+TOP_CLIENTS="[]"
+BYPASS_COUNT=0
+if [ -f "/etc/opengfw/bypass_devices.json" ]; then
+    BYPASS_COUNT=$(grep -c '"enabled": true' /etc/opengfw/bypass_devices.json 2>/dev/null)
+fi
+BYPASS_COUNT=$(echo "$BYPASS_COUNT" | head -n 1 | tr -cd '0-9')
+[ -z "$BYPASS_COUNT" ] && BYPASS_COUNT=0
 
 if [ -f "$LOG_FILE" ]; then
     # 日志自动防爆内存轮转 (超过 3MB 保留最新 3000 行)
@@ -85,6 +93,76 @@ if [ -f "$LOG_FILE" ]; then
     }' | sed 's/,$//')
     [ -z "$RECENT_EVENTS" ] && RECENT_EVENTS=""
     RECENT_EVENTS="[$RECENT_EVENTS]"
+
+    # 极速聚合 Top 10 拦截域名与 Top 5 拦截设备
+    ANALYTICS_JSON=$(python3 -c "
+import json, os
+from collections import Counter
+
+log_path = '${LOG_FILE}'
+host_map = {}
+if os.path.exists('/tmp/dhcp.leases'):
+    try:
+        with open('/tmp/dhcp.leases', 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 4:
+                    mac, ip, host = parts[1], parts[2], parts[3]
+                    if host != '*': host_map[ip] = host
+    except: pass
+
+domain_counter = Counter()
+client_counter = Counter()
+
+try:
+    with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+        lines = f.readlines()[-2000:]
+        for line in lines:
+            idx = line.find('{')
+            if idx == -1: continue
+            try:
+                p = json.loads(line[idx:])
+            except: continue
+            
+            is_block = False
+            name = p.get('name', '').lower()
+            action = p.get('action', '').lower()
+            if action in ['block', 'drop'] or 'ads' in name or 'block' in name or '拦截' in name:
+                is_block = True
+            if not is_block: continue
+
+            props = p.get('props', {})
+            domain = None
+            if 'tls' in props and 'sni' in props['tls']: domain = props['tls']['sni']
+            elif 'http' in props and 'host' in props['http']: domain = props['http']['host']
+            elif 'dns' in props and 'name' in props['dns']: domain = props['dns']['name']
+            elif 'quic' in props and 'sni' in props['quic']: domain = props['quic']['sni']
+            if domain: domain_counter[domain] += 1
+
+            src = p.get('src')
+            if src:
+                ip = src.split(':')[0]
+                if ip.startswith('10.') or ip.startswith('192.168.') or ip.startswith('172.'):
+                    client_counter[ip] += 1
+
+    top_d = []
+    max_d = domain_counter.most_common(1)[0][1] if domain_counter else 1
+    for d, c in domain_counter.most_common(10):
+        top_d.append({'domain': d, 'count': c, 'percent': int(round((c / max_d) * 100))})
+
+    top_c = []
+    max_c = client_counter.most_common(1)[0][1] if client_counter else 1
+    for ip, c in client_counter.most_common(5):
+        h = host_map.get(ip, '局域网设备')
+        top_c.append({'ip': ip, 'hostname': h, 'count': c, 'percent': int(round((c / max_c) * 100))})
+
+    print(json.dumps({'top_domains': top_d, 'top_clients': top_c}))
+except Exception as e:
+    print(json.dumps({'top_domains': [], 'top_clients': []}))
+" 2>/dev/null || echo '{"top_domains":[],"top_clients":[]}')
+
+    TOP_DOMAINS=$(echo "$ANALYTICS_JSON" | python3 -c "import json, sys; print(json.dumps(json.load(sys.stdin).get('top_domains', [])))" 2>/dev/null || echo "[]")
+    TOP_CLIENTS=$(echo "$ANALYTICS_JSON" | python3 -c "import json, sys; print(json.dumps(json.load(sys.stdin).get('top_clients', [])))" 2>/dev/null || echo "[]")
 fi
 
 QUEUED_PKTS=$(echo "$QUEUED_PKTS" | tr -cd '0-9')
@@ -104,6 +182,8 @@ IPS_BLOCKED=$(printf "%d" "$IPS_BLOCKED" 2>/dev/null || echo 0)
 
 TOTAL_BLOCKED=$((DROPPED_PKTS + ADS_BLOCKED + IPS_BLOCKED))
 TOTAL_BLOCKED=$(printf "%d" "$TOTAL_BLOCKED" 2>/dev/null || echo 0)
+
+BYPASS_COUNT=$(printf "%d" "$BYPASS_COUNT" 2>/dev/null || echo 0)
 
 RAW_MODE=$(uci -q get opengfw.global.mode || echo "forward")
 if [ "$RAW_MODE" = "forward" ]; then
@@ -129,6 +209,9 @@ cat <<EOF
   "ads_blocked": $ADS_BLOCKED,
   "ips_blocked": $IPS_BLOCKED,
   "total_blocked": $TOTAL_BLOCKED,
+  "bypass_count": $BYPASS_COUNT,
+  "top_domains": $TOP_DOMAINS,
+  "top_clients": $TOP_CLIENTS,
   "recent_events": $RECENT_EVENTS
 }
 EOF

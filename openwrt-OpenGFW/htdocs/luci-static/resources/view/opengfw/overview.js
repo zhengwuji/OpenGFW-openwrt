@@ -65,6 +65,7 @@ function renderRecentEvents(events) {
 					'click': function(ev) {
 						ev.preventDefault();
 						return fs.exec('/usr/bin/opengfw-whitelist-helper', ['add', domain]).then(function() {
+							if (window._opengfw_reload_whitelist) window._opengfw_reload_whitelist();
 							ui.showModal(_('白名单添加成功'), [
 								E('p', { 'style': 'color: #28a745; font-weight: bold;' }, _('✅ 域名 [' + domain + '] 已成功加入白名单并秒级生效！')),
 								E('p', { 'style': 'color: #666; font-size: 12px;' }, _('后续该域名的访问将直接内核放行直通，不再拦截。')),
@@ -88,6 +89,109 @@ function renderRecentEvents(events) {
 	} else {
 		return [ E('div', { 'style': 'color: #28a745; text-align: center; padding: 8px;' }, _('✅ 当前网络畅通。当检测到广告请求或拦截国家 IP 连接时将在此实时展示！')) ];
 	}
+}
+
+function renderTopDomains(domains) {
+	if (!domains || domains.length === 0) {
+		return [ E('div', { 'style': 'color: #888; text-align: center; padding: 14px; font-size: 12px;' }, _('暂无高频拦截域名记录')) ];
+	}
+	return domains.map(function(item, idx) {
+		let rankColor = idx === 0 ? '#f59f00' : (idx === 1 ? '#495057' : (idx === 2 ? '#d9480f' : '#868e96'));
+		let rankBg = idx === 0 ? 'rgba(245, 159, 0, 0.15)' : (idx === 1 ? 'rgba(134, 142, 150, 0.15)' : (idx === 2 ? 'rgba(217, 72, 15, 0.15)' : 'rgba(173, 181, 189, 0.12)'));
+		let pct = Math.max(5, Math.min(100, item.percent || 10));
+
+		return E('div', {
+			'style': 'padding: 6px 0; border-bottom: 1px dashed rgba(128, 128, 128, 0.15); display: flex; flex-direction: column; gap: 4px;'
+		}, [
+			E('div', { 'style': 'display: flex; justify-content: space-between; align-items: center; gap: 8px;' }, [
+				E('div', { 'style': 'display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1;' }, [
+					E('span', {
+						'style': 'display: inline-block; width: 22px; height: 18px; line-height: 18px; text-align: center; font-size: 11px; font-weight: bold; border-radius: 3px; background: ' + rankBg + '; color: ' + rankColor + '; flex-shrink: 0;'
+					}, '#' + (idx + 1)),
+					E('span', {
+						'style': 'font-family: monospace; font-size: 12px; font-weight: 600; color: #212529; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;',
+						'title': item.domain
+					}, item.domain)
+				]),
+				E('div', { 'style': 'display: flex; align-items: center; gap: 6px; flex-shrink: 0;' }, [
+					E('span', { 'style': 'font-size: 11px; font-weight: bold; color: #e03131; background: rgba(224, 49, 49, 0.1); padding: 1px 6px; border-radius: 3px;' }, item.count + ' 次'),
+					E('button', {
+						'class': 'btn cbi-button cbi-button-action',
+						'style': 'padding: 1px 6px; font-size: 11px; line-height: 1.4;',
+						'click': function(ev) {
+							ev.preventDefault();
+							return fs.exec('/usr/bin/opengfw-whitelist-helper', ['add', item.domain]).then(function() {
+								if (window._opengfw_reload_whitelist) window._opengfw_reload_whitelist();
+								ui.showModal(_('域名加白成功'), [
+									E('p', { 'style': 'color: #28a745; font-weight: bold;' }, _('✅ 域名 [' + item.domain + '] 已加入白名单并秒级生效！')),
+									E('p', { 'style': 'color: #666; font-size: 12px;' }, _('后续该域名的访问将直接内核放行直通，不再拦截。')),
+									E('div', { 'class': 'right', 'style': 'margin-top: 15px; text-align: right;' }, [
+										E('button', { 'class': 'btn cbi-button cbi-button-primary', 'click': ui.hideModal }, _('完成'))
+									])
+								]);
+							});
+						}
+					}, _('⚡ 加白'))
+				])
+			]),
+			E('div', { 'style': 'width: 100%; height: 4px; background: rgba(128, 128, 128, 0.1); border-radius: 2px; overflow: hidden;' }, [
+				E('div', { 'style': 'width: ' + pct + '%; height: 100%; background: linear-gradient(90deg, #ff6b6b, #fa5252); border-radius: 2px;' })
+			])
+		]);
+	});
+}
+
+function renderTopClients(clients) {
+	if (!clients || clients.length === 0) {
+		return [ E('div', { 'style': 'color: #888; text-align: center; padding: 14px; font-size: 12px;' }, _('暂无受限局域网设备记录')) ];
+	}
+	return clients.map(function(item, idx) {
+		let rankColor = idx === 0 ? '#1c7ed6' : (idx === 1 ? '#228be6' : (idx === 2 ? '#339af0' : '#4dabf7'));
+		let rankBg = 'rgba(28, 126, 214, 0.12)';
+		let pct = Math.max(5, Math.min(100, item.percent || 10));
+		let title = (item.hostname && item.hostname !== '局域网设备') ? (item.hostname + ' (' + item.ip + ')') : item.ip;
+
+		return E('div', {
+			'style': 'padding: 6px 0; border-bottom: 1px dashed rgba(128, 128, 128, 0.15); display: flex; flex-direction: column; gap: 4px;'
+		}, [
+			E('div', { 'style': 'display: flex; justify-content: space-between; align-items: center; gap: 8px;' }, [
+				E('div', { 'style': 'display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1;' }, [
+					E('span', {
+						'style': 'display: inline-block; width: 22px; height: 18px; line-height: 18px; text-align: center; font-size: 11px; font-weight: bold; border-radius: 3px; background: ' + rankBg + '; color: ' + rankColor + '; flex-shrink: 0;'
+					}, '#' + (idx + 1)),
+					E('span', { 'style': 'font-size: 13px;' }, '💻'),
+					E('span', {
+						'style': 'font-size: 12px; font-weight: 600; color: #212529; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;',
+						'title': title
+					}, title)
+				]),
+				E('div', { 'style': 'display: flex; align-items: center; gap: 6px; flex-shrink: 0;' }, [
+					E('span', { 'style': 'font-size: 11px; font-weight: bold; color: #1c7ed6; background: rgba(28, 126, 214, 0.1); padding: 1px 6px; border-radius: 3px;' }, item.count + ' 次'),
+					E('button', {
+						'class': 'btn cbi-button cbi-button-action',
+						'style': 'padding: 1px 6px; font-size: 11px; line-height: 1.4;',
+						'click': function(ev) {
+							ev.preventDefault();
+							let host = item.hostname || '局域网设备';
+							return fs.exec('/usr/bin/opengfw-bypass-helper', ['add', item.ip, host]).then(function() {
+								if (window._opengfw_reload_bypass) window._opengfw_reload_bypass();
+								ui.showModal(_('设备直通豁免成功'), [
+									E('p', { 'style': 'color: #28a745; font-weight: bold;' }, _('✅ 设备 [' + host + ' (' + item.ip + ')] 已加入硬件级直通免过滤名单！')),
+									E('p', { 'style': 'color: #666; font-size: 12px;' }, _('该设备在 nftables 内核层通过 O(1) 哈希表直接放行，彻底跳过 OpenGFW 审查队列，保证 0 延迟、0 丢包和满速传输。')),
+									E('div', { 'class': 'right', 'style': 'margin-top: 15px; text-align: right;' }, [
+										E('button', { 'class': 'btn cbi-button cbi-button-primary', 'click': ui.hideModal }, _('完成'))
+									])
+								]);
+							});
+						}
+					}, _('🚀 设为直通'))
+				])
+			]),
+			E('div', { 'style': 'width: 100%; height: 4px; background: rgba(128, 128, 128, 0.1); border-radius: 2px; overflow: hidden;' }, [
+				E('div', { 'style': 'width: ' + pct + '%; height: 100%; background: linear-gradient(90deg, #339af0, #1c7ed6); border-radius: 2px;' })
+			])
+		]);
+	});
 }
 
 // 解决主题下 alert-message 通知框关闭事件
@@ -212,7 +316,34 @@ return view.extend({
 					createStatCard(_('直通放行数据包'), 'st_pkts_accepted', '' + (initialStatus.pkts_accepted || 0), '#28a745'),
 					createStatCard(_('🛡️ 广告拦截次数'), 'st_ads_blocked', (initialStatus.ads_blocked || 0) + ' 次', '#e03131'),
 					createStatCard(_('🌐 地区/IP阻断'), 'st_ips_blocked', (initialStatus.ips_blocked || 0) + ' 次', '#f76707'),
+					createStatCard(_('🚀 直通豁免设备'), 'st_bypass_count', (initialStatus.bypass_count || 0) + ' 台', '#1098ad'),
 					createStatCard(_('⛔ 命中阻断数据包'), 'st_pkts_dropped', '' + (initialStatus.pkts_dropped || 0), '#c92a2a')
+				]),
+
+				// 📊 拦截统计 Top 看板
+				E('div', { 'id': 'opengfw_top_analytics_container', 'style': 'margin-top: 15px; border-top: 1px solid #e5e5e5; padding-top: 12px;' }, [
+					E('div', { 'style': 'display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;' }, [
+						E('h4', { 'style': 'margin: 0; font-size: 14px; font-weight: bold;' }, _('📊 实时拦截 Top 统计看板 (近2000次阻断深度聚合)')),
+						E('span', { 'style': 'font-size: 12px; color: #888;' }, _('点击【⚡ 加白】放行误杀域名，点击【🚀 设为直通】免除该设备一切审查'))
+					]),
+					E('div', { 'style': 'display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 15px;' }, [
+						// Top 10 Domains
+						E('div', { 'style': 'background: rgba(128, 128, 128, 0.05); border: 1px solid rgba(128, 128, 128, 0.15); border-radius: 6px; padding: 12px;' }, [
+							E('div', { 'style': 'font-weight: bold; margin-bottom: 8px; font-size: 13px; color: #d6336c; display: flex; align-items: center; justify-content: space-between;' }, [
+								E('span', {}, '🌐 拦截最多域名 Top 10'),
+								E('span', { 'style': 'font-size: 11px; color: #888;' }, '高频阻断目标')
+							]),
+							E('div', { 'id': 'st_top_domains_list' }, renderTopDomains(initialStatus.top_domains))
+						]),
+						// Top 5 Clients
+						E('div', { 'style': 'background: rgba(128, 128, 128, 0.05); border: 1px solid rgba(128, 128, 128, 0.15); border-radius: 6px; padding: 12px;' }, [
+							E('div', { 'style': 'font-weight: bold; margin-bottom: 8px; font-size: 13px; color: #1c7ed6; display: flex; align-items: center; justify-content: space-between;' }, [
+								E('span', {}, '📱 触发拦截最多设备 Top 5'),
+								E('span', { 'style': 'font-size: 11px; color: #888;' }, '高频受限来源')
+							]),
+							E('div', { 'id': 'st_top_clients_list' }, renderTopClients(initialStatus.top_clients))
+						])
+					])
 				]),
 
 				// 实时拦截事件明细展示区
@@ -237,7 +368,10 @@ return view.extend({
 				let elD = document.getElementById('st_pkts_dropped');
 				let elAds = document.getElementById('st_ads_blocked');
 				let elIps = document.getElementById('st_ips_blocked');
+				let elBypass = document.getElementById('st_bypass_count');
 				let elRecent = document.getElementById('st_recent_events_list');
+				let elTopD = document.getElementById('st_top_domains_list');
+				let elTopC = document.getElementById('st_top_clients_list');
 
 				if (elRunning) {
 					if (st.running) {
@@ -255,7 +389,14 @@ return view.extend({
 				if (elD) elD.textContent = st.pkts_dropped != null ? '' + st.pkts_dropped : '0';
 				if (elAds) elAds.textContent = (st.ads_blocked || 0) + ' 次';
 				if (elIps) elIps.textContent = (st.ips_blocked || 0) + ' 次';
+				if (elBypass) elBypass.textContent = (st.bypass_count != null ? st.bypass_count : 0) + ' 台';
 
+				if (elTopD && st.top_domains) {
+					dom.content(elTopD, renderTopDomains(st.top_domains));
+				}
+				if (elTopC && st.top_clients) {
+					dom.content(elTopC, renderTopClients(st.top_clients));
+				}
 				if (elRecent) {
 					dom.content(elRecent, renderRecentEvents(st.recent_events));
 				}
@@ -373,12 +514,168 @@ return view.extend({
 					}) : [ E('span', { 'style': 'color: #999; font-size: 12px;' }, _('暂无自定义白名单域名')) ]);
 				});
 			}
+
+			window._opengfw_reload_whitelist = loadWhitelist;
 			loadWhitelist();
 
 			return E('div', { 'class': 'cbi-section', 'style': 'margin-top: 20px;' }, [
 				E('div', { 'style': 'display: flex; align-items: center; margin-bottom: 8px;' }, [ inputEl, addBtn ]),
 				E('div', { 'style': 'color: #888; font-size: 12px; margin-bottom: 8px;' }, _('白名单内的域名将直接在防火墙首层内核直通放行，优先级高于任何广告与地区阻断规则。')),
 				listContainer
+			]);
+		};
+
+		// 🚀 局域网设备直通免过滤管理卡片 (设备级白名单 / MAC/IP 豁免)
+		s = m.section(form.NamedSection, 'global', 'opengfw', _('🚀 局域网设备直通免过滤管理 (设备级白名单 / MAC/IP 豁免)'));
+		s.anonymous = true;
+		s.render = function() {
+			let leaseSelect = E('select', {
+				'class': 'cbi-input-select',
+				'style': 'max-width: 280px; margin-right: 8px;'
+			}, [
+				E('option', { 'value': '' }, _('⚡ 从当前在线局域网设备选择 (DHCP)...'))
+			]);
+
+			let inputIp = E('input', {
+				'type': 'text',
+				'placeholder': '例如: 10.10.10.117',
+				'class': 'cbi-input-text',
+				'style': 'max-width: 150px; margin-right: 8px;'
+			});
+
+			let inputComment = E('input', {
+				'type': 'text',
+				'placeholder': '设备名称/备注 (如: 客厅PS5)',
+				'class': 'cbi-input-text',
+				'style': 'max-width: 180px; margin-right: 8px;'
+			});
+
+			let addBtn = E('button', {
+				'class': 'btn cbi-button cbi-button-action',
+				'click': function(ev) {
+					ev.preventDefault();
+					let ip = (inputIp.value || '').trim();
+					let comment = (inputComment.value || '').trim();
+					if (!ip) {
+						ui.addNotification(null, E('p', {}, '请输入设备局域网 IP 地址'), 'warning');
+						return;
+					}
+					fs.exec('/usr/bin/opengfw-bypass-helper', ['add', ip, comment, '', comment]).then(function() {
+						inputIp.value = '';
+						inputComment.value = '';
+						leaseSelect.value = '';
+						loadBypassDevices();
+						ui.showModal(_('添加成功'), [
+							E('p', { 'style': 'color: #28a745; font-weight: bold;' }, _('✅ 设备 [' + ip + (comment ? ' - ' + comment : '') + '] 已加入直通豁免名单！')),
+							E('p', { 'style': 'color: #666; font-size: 12px;' }, _('该设备流量将在底层 Linux 内核通过 nftables 硬件集合瞬间放行，彻底跳过审查。')),
+							E('div', { 'class': 'right', 'style': 'margin-top: 15px; text-align: right;' }, [
+								E('button', { 'class': 'btn cbi-button cbi-button-primary', 'click': ui.hideModal }, _('完成'))
+							])
+						]);
+					});
+				}
+			}, _('➕ 添加直通设备'));
+
+			let leasesMap = {};
+			fs.exec('/usr/bin/opengfw-bypass-helper', ['leases']).then(function(res) {
+				let leases = safeJsonParse((res && res.stdout) || '[]');
+				if (Array.isArray(leases)) {
+					leases.forEach(function(l) {
+						leasesMap[l.ip] = l;
+						let opt = E('option', { 'value': l.ip }, '📱 ' + l.hostname + ' (' + l.ip + ')');
+						leaseSelect.appendChild(opt);
+					});
+				}
+			});
+
+			leaseSelect.addEventListener('change', function() {
+				let ip = leaseSelect.value;
+				if (ip && leasesMap[ip]) {
+					inputIp.value = ip;
+					if (!inputComment.value) inputComment.value = leasesMap[ip].hostname || '';
+				}
+			});
+
+			let tableContainer = E('div', { 'style': 'margin-top: 15px; overflow-x: auto;' });
+
+			function loadBypassDevices() {
+				fs.exec('/usr/bin/opengfw-bypass-helper', ['get']).then(function(res) {
+					let devices = safeJsonParse((res && res.stdout) || '[]');
+					if (!Array.isArray(devices) || devices.length === 0) {
+						dom.content(tableContainer, E('div', {
+							'style': 'color: #888; padding: 15px; text-align: center; border: 1px dashed rgba(128,128,128,0.2); border-radius: 6px;'
+						}, _('暂无直通豁免设备。所有局域网设备默认均接受 OpenGFW 审查与广告拦截。')));
+						return;
+					}
+
+					let rows = devices.map(function(d) {
+						let isEnabled = d.enabled !== false;
+						let statusBadge = isEnabled ?
+							E('span', { 'style': 'background: #2b8a3e; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 11px;' }, '● 硬件直通中 (O(1))') :
+							E('span', { 'style': 'background: #868e96; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 11px;' }, '● 已暂停直通');
+
+						let toggleBtn = E('button', {
+							'class': 'btn cbi-button ' + (isEnabled ? 'cbi-button-neutral' : 'cbi-button-save'),
+							'style': 'padding: 2px 8px; font-size: 11px; margin-right: 6px;',
+							'click': function(e) {
+								e.preventDefault();
+								fs.exec('/usr/bin/opengfw-bypass-helper', ['toggle', d.ip]).then(function() {
+									loadBypassDevices();
+								});
+							}
+						}, isEnabled ? _('⏸️ 暂停') : _('▶️ 恢复'));
+
+						let delBtn = E('button', {
+							'class': 'btn cbi-button cbi-button-remove',
+							'style': 'padding: 2px 8px; font-size: 11px;',
+							'click': function(e) {
+								e.preventDefault();
+								fs.exec('/usr/bin/opengfw-bypass-helper', ['del', d.ip]).then(function() {
+									loadBypassDevices();
+								});
+							}
+						}, _('🗑️ 移除'));
+
+						let devName = d.comment || d.hostname || '局域网设备';
+						let icon = (devName.indexOf('PC') !== -1 || devName.indexOf('电脑') !== -1 || devName.indexOf('主机') !== -1 || devName.indexOf('B50') !== -1) ? '💻' : '📱';
+
+						return E('tr', { 'class': 'cbi-section-table-row' }, [
+							E('td', { 'class': 'cbi-value-field', 'style': 'font-weight: bold;' }, [
+								E('span', { 'style': 'margin-right: 6px;' }, icon),
+								devName
+							]),
+							E('td', { 'class': 'cbi-value-field', 'style': 'font-family: monospace;' }, d.ip),
+							E('td', { 'class': 'cbi-value-field', 'style': 'font-family: monospace; color: #666;' }, d.mac || '-'),
+							E('td', { 'class': 'cbi-value-field' }, [ statusBadge ]),
+							E('td', { 'class': 'cbi-value-field' }, [ toggleBtn, delBtn ])
+						]);
+					});
+
+					let table = E('table', { 'class': 'table cbi-section-table', 'style': 'width: 100%; border-collapse: collapse;' }, [
+						E('tr', { 'class': 'cbi-section-table-titles' }, [
+							E('th', { 'class': 'th' }, _('设备名称 / 备注')),
+							E('th', { 'class': 'th' }, _('局域网 IP')),
+							E('th', { 'class': 'th' }, _('MAC 地址')),
+							E('th', { 'class': 'th' }, _('直通状态')),
+							E('th', { 'class': 'th' }, _('操作'))
+						]),
+						E('tbody', {}, rows)
+					]);
+
+					dom.content(tableContainer, table);
+				});
+			}
+
+			window._opengfw_reload_bypass = loadBypassDevices;
+			loadBypassDevices();
+
+			return E('div', { 'class': 'cbi-section', 'style': 'margin-top: 20px;' }, [
+				E('div', { 'style': 'display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px;' }, [
+					leaseSelect, inputIp, inputComment, addBtn
+				]),
+				E('div', { 'style': 'color: #888; font-size: 12px; margin-bottom: 8px; line-height: 1.5;' },
+					_('💡 原理说明：直通设备的所有网络数据包在进入 Linux 内核的第一时间（nftables prerouting/forward 阶段）即通过硬件哈希集（O(1) 复杂度）直接 accept 放行，彻底跳过审查队列，实现 0 内存拷贝、0 延迟与满速传输。')),
+				tableContainer
 			]);
 		};
 

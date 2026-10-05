@@ -1,0 +1,268 @@
+#!/bin/sh
+# OpenGFW 局域网设备直通免过滤管理助手
+# 管理 /etc/opengfw/bypass_devices.json，并同步联动 nftables 硬件级直通与 rules.yaml 顶层放行规则
+
+CONF_DIR="/etc/opengfw"
+BYPASS_JSON="${CONF_DIR}/bypass_devices.json"
+RULES_FILE="${CONF_DIR}/rules.yaml"
+
+mkdir -p "$CONF_DIR"
+
+if [ ! -f "$BYPASS_JSON" ]; then
+    echo "[]" > "$BYPASS_JSON"
+fi
+
+get_json() {
+    if [ -f "$BYPASS_JSON" ]; then
+        cat "$BYPASS_JSON"
+    else
+        echo "[]"
+    fi
+}
+
+get_leases() {
+    python3 -c "
+import json, os
+
+leases = []
+leases_path = '/tmp/dhcp.leases'
+if os.path.exists(leases_path):
+    try:
+        with open(leases_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 4:
+                    mac, ip, host = parts[1], parts[2], parts[3]
+                    if host == '*':
+                        host = '未知主机'
+                    leases.append({
+                        'ip': ip,
+                        'mac': mac,
+                        'hostname': host
+                    })
+    except:
+        pass
+
+print(json.dumps(leases, ensure_ascii=False))
+"
+}
+
+apply_bypass() {
+    python3 -c "
+import json, os, subprocess
+
+conf_dir = '${CONF_DIR}'
+bypass_json = '${BYPASS_JSON}'
+rules_file = '${RULES_FILE}'
+
+devices = []
+if os.path.exists(bypass_json):
+    try:
+        with open(bypass_json, 'r', encoding='utf-8') as f:
+            devices = json.load(f)
+    except:
+        devices = []
+
+enabled_ips = []
+bypass_rules_yaml = []
+
+for d in devices:
+    if not d.get('enabled', True):
+        continue
+    ip = d.get('ip', '').strip()
+    if not ip:
+        continue
+    enabled_ips.append(ip)
+    
+    # 格式化 IP / CIDR
+    cidr = ip
+    if '/' not in cidr:
+        if ':' in cidr:
+            cidr += '/128'
+        else:
+            cidr += '/32'
+    
+    hname = d.get('hostname') or d.get('comment') or '局域网直通设备'
+    bypass_rules_yaml.append(f'- name: \"设备直通豁免-{ip} ({hname})\"')
+    bypass_rules_yaml.append('  action: allow')
+    bypass_rules_yaml.append('  log: false')
+    bypass_rules_yaml.append(f'  expr: cidr(ip.src, \"{cidr}\") || cidr(ip.dst, \"{cidr}\")')
+    bypass_rules_yaml.append('')
+
+# 1. 应用至 nftables 硬件级直通 (0 用户态开销)
+try:
+    subprocess.run('nft add set inet opengfw bypass_ips \"{ type ipv4_addr; }\" 2>/dev/null', shell=True)
+    subprocess.run('nft flush set inet opengfw bypass_ips 2>/dev/null', shell=True)
+    if enabled_ips:
+        ipv4_only = [ip for ip in enabled_ips if ':' not in ip]
+        if ipv4_only:
+            elements_str = ', '.join(ipv4_only)
+            subprocess.run(f'nft add element inet opengfw bypass_ips \"{{ {elements_str} }}\" 2>/dev/null', shell=True)
+            # 确保 PREROUTING 和 FORWARD 存在跳过规则
+            prerouting_rules = subprocess.getoutput('nft list chain inet opengfw PREROUTING 2>/dev/null')
+            if 'ip saddr @bypass_ips' not in prerouting_rules:
+                subprocess.run('nft insert rule inet opengfw PREROUTING ip saddr @bypass_ips counter accept 2>/dev/null', shell=True)
+            if 'ip daddr @bypass_ips' not in prerouting_rules:
+                subprocess.run('nft insert rule inet opengfw PREROUTING ip daddr @bypass_ips counter accept 2>/dev/null', shell=True)
+            
+            forward_rules = subprocess.getoutput('nft list chain inet opengfw FORWARD 2>/dev/null')
+            if 'ip saddr @bypass_ips' not in forward_rules:
+                subprocess.run('nft insert rule inet opengfw FORWARD ip saddr @bypass_ips counter accept 2>/dev/null', shell=True)
+            if 'ip daddr @bypass_ips' not in forward_rules:
+                subprocess.run('nft insert rule inet opengfw FORWARD ip daddr @bypass_ips counter accept 2>/dev/null', shell=True)
+except Exception as e:
+    pass
+
+# 2. 同步至 OpenGFW rules.yaml 最顶层 (双重放行兜底保证)
+if os.path.exists(rules_file):
+    try:
+        with open(rules_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except:
+        content = ''
+    
+    start_tag = '# --- BEGIN_DEVICE_BYPASS ---'
+    end_tag = '# --- END_DEVICE_BYPASS ---'
+    
+    new_block = start_tag + '\n' + '\n'.join(bypass_rules_yaml) + '\n' + end_tag
+    
+    if start_tag in content and end_tag in content:
+        p1 = content.find(start_tag)
+        p2 = content.find(end_tag) + len(end_tag)
+        content = content[:p1] + new_block + content[p2:]
+    else:
+        content = new_block + '\n\n' + content
+        
+    with open(rules_file, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+# 3. 通知 OpenGFW 守护进程平滑热重载
+subprocess.run('kill -HUP \$(pidof opengfw | awk \"{print \\$1}\") 2>/dev/null', shell=True)
+print(json.dumps({'status': 'ok', 'count': len(enabled_ips)}, ensure_ascii=False))
+"
+}
+
+add_device() {
+    local ip="$1"
+    local hostname="$2"
+    local mac="$3"
+    local comment="$4"
+
+    [ -z "$ip" ] && echo "{\"status\": \"error\", \"message\": \"IP不能为空\"}" && return 1
+
+    python3 -c "
+import json, time
+
+bypass_json = '${BYPASS_JSON}'
+try:
+    with open(bypass_json, 'r', encoding='utf-8') as f:
+        devices = json.load(f)
+except:
+    devices = []
+
+ip = '${ip}'.strip()
+hostname = '${hostname}'.strip() or '局域网直通设备'
+mac = '${mac}'.strip()
+comment = '${comment}'.strip()
+
+# 检查是否已存在
+found = False
+for d in devices:
+    if d.get('ip') == ip:
+        d['enabled'] = True
+        if hostname: d['hostname'] = hostname
+        if mac: d['mac'] = mac
+        if comment: d['comment'] = comment
+        found = True
+        break
+
+if not found:
+    devices.insert(0, {
+        'id': f'bp_{int(time.time()*1000)}',
+        'ip': ip,
+        'hostname': hostname,
+        'mac': mac,
+        'comment': comment,
+        'enabled': True,
+        'time': time.strftime('%Y-%m-%d %H:%M:%S')
+    })
+
+with open(bypass_json, 'w', encoding='utf-8') as f:
+    json.dump(devices, f, ensure_ascii=False, indent=2)
+"
+    apply_bypass
+}
+
+del_device() {
+    local target="$1"
+    [ -z "$target" ] && echo "{\"status\": \"error\", \"message\": \"目标不能为空\"}" && return 1
+
+    python3 -c "
+import json
+
+bypass_json = '${BYPASS_JSON}'
+try:
+    with open(bypass_json, 'r', encoding='utf-8') as f:
+        devices = json.load(f)
+except:
+    devices = []
+
+target = '${target}'.strip()
+devices = [d for d in devices if d.get('ip') != target and d.get('id') != target]
+
+with open(bypass_json, 'w', encoding='utf-8') as f:
+    json.dump(devices, f, ensure_ascii=False, indent=2)
+"
+    apply_bypass
+}
+
+toggle_device() {
+    local target="$1"
+    [ -z "$target" ] && return 1
+
+    python3 -c "
+import json
+
+bypass_json = '${BYPASS_JSON}'
+try:
+    with open(bypass_json, 'r', encoding='utf-8') as f:
+        devices = json.load(f)
+except:
+    devices = []
+
+target = '${target}'.strip()
+for d in devices:
+    if d.get('ip') == target or d.get('id') == target:
+        d['enabled'] = not d.get('enabled', True)
+        break
+
+with open(bypass_json, 'w', encoding='utf-8') as f:
+    json.dump(devices, f, ensure_ascii=False, indent=2)
+"
+    apply_bypass
+}
+
+case "$1" in
+    get)
+        get_json
+        ;;
+    leases)
+        get_leases
+        ;;
+    add)
+        add_device "$2" "$3" "$4" "$5"
+        ;;
+    del)
+        del_device "$2"
+        ;;
+    toggle)
+        toggle_device "$2"
+        ;;
+    apply)
+        apply_bypass
+        ;;
+    *)
+        echo "Usage: $0 {get|leases|add <ip> [hostname] [mac] [comment]|del <ip_or_id>|toggle <ip_or_id>|apply}"
+        exit 1
+        ;;
+esac
