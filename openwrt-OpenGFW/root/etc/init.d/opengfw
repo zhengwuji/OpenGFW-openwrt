@@ -19,7 +19,7 @@ generate_config() {
 	config_get queue_size global queue_size "2048"
 	config_get rcv_buf global rcv_buf "8388608"
 	config_get snd_buf global snd_buf "8388608"
-	config_get rst global rst "0"
+	config_get rst global rst "1"
 	config_get tcp_pages global tcp_max_pages_total "4096"
 	config_get tcp_conn global tcp_max_pages_per_conn "64"
 	config_get udp_streams global udp_max_streams "4096"

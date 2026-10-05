@@ -296,7 +296,7 @@ return view.extend({
 		o.description = _('多核流级负载均衡处理线程数，当前软路由为 4 核心，推荐设置为 2 至 4。');
 
 		o = s.option(form.Flag, 'rst', _('拦截时主动发送 TCP 复位包 (RST)'));
-		o.default = o.disabled;
+		o.default = o.enabled;
 		o.description = _('启用后，被拦截的网页连接会立即收到复位切断信号，手机和电脑端无需等待连接超时。');
 
 		o = s.option(form.ListValue, 'log_level', _('日志记录详细等级'));
