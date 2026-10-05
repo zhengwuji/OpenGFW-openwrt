@@ -129,10 +129,10 @@ jobs:
           cp openwrt-OpenGFW/root/usr/share/luci/menu.d/luci-app-opengfw.json "${DATA}/usr/share/luci/menu.d/"
           cp openwrt-OpenGFW/root/usr/share/rpcd/acl.d/luci-app-opengfw.json "${DATA}/usr/share/rpcd/acl.d/"
           
-          # Fix file permissions (Standard OpenWrt permissions)
-          chmod 755 "${DATA}/usr/bin/"*
-          chmod 755 "${DATA}/etc/init.d/"*
-          chmod -R 644 "${DATA}/etc/config/"* "${DATA}/etc/opengfw/"* "${DATA}/www/"* "${DATA}/usr/share/"*
+          # Fix file permissions (Directories 755, regular files 644, binaries & scripts 755)
+          find "${DATA}" -type d -exec chmod 755 {} +
+          find "${DATA}" -type f -exec chmod 644 {} +
+          chmod 755 "${DATA}/usr/bin/"* "${DATA}/etc/init.d/"*
           
           # 3. Assemble control directory
           CONTROL="${WORKDIR}/ipk/control"
@@ -219,8 +219,9 @@ jobs:
           cp openwrt-OpenGFW/root/usr/share/luci/menu.d/luci-app-opengfw.json "${DATA}/usr/share/luci/menu.d/"
           cp openwrt-OpenGFW/root/usr/share/rpcd/acl.d/luci-app-opengfw.json "${DATA}/usr/share/rpcd/acl.d/"
           
+          find "${DATA}" -type d -exec chmod 755 {} +
+          find "${DATA}" -type f -exec chmod 644 {} +
           chmod 755 "${DATA}/usr/bin/"* "${DATA}/etc/init.d/"*
-          chmod -R 644 "${DATA}/etc/config/"* "${DATA}/etc/opengfw/"* "${DATA}/www/"* "${DATA}/usr/share/"*
           
           CONTROL="${WORKDIR}/ipk/control"
           cat <<EOF > "${CONTROL}/control"
@@ -289,8 +290,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: latest
-          name: "OpenGFW OpenWrt Plugins Auto-Build"
+          tag_name: "v1.0.0"
+          name: "OpenGFW OpenWrt Plugins Auto-Build (v1.0.0)"
           body: |
             ## OpenGFW for OpenWrt 插件自动编译产物
 
