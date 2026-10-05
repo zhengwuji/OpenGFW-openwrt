@@ -90,14 +90,13 @@ start_service() {
 	touch "$LOG_FILE"
 
 	procd_open_instance "opengfw"
-	procd_set_param env GOGC=50 GOMEMLIMIT=180MiB
-	procd_set_param command /bin/sh -c "export GOGC=50 GOMEMLIMIT=180MiB; exec $PROG -c $CONF_DIR/config.yaml -l $log_level -f $log_format $rules_path >> $LOG_FILE 2>&1"
+	procd_set_param command /bin/sh -c "exec $PROG -c $CONF_DIR/config.yaml -l $log_level -f $log_format $rules_path >> $LOG_FILE 2>&1"
 	procd_set_param respawn 3600 5 0
 	procd_set_param file "$rules_path" "/etc/config/opengfw"
 	procd_set_param user root
 	procd_close_instance
 
-	logger -t opengfw "OpenGFW service started successfully in $log_level level (GOGC=50, GOMEMLIMIT=180MiB)"
+	logger -t opengfw "OpenGFW service started successfully in $log_level level"
 }
 
 stop_service() {
