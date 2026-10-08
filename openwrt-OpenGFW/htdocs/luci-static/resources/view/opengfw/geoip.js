@@ -970,5 +970,24 @@ return view.extend({
 			mapNode.appendChild(saveBtn);
 			return mapNode;
 		});
-	}
+	},
+
+	// -----------------------------------------------------------------------
+	// 关闭 LuCI 默认的「保存 / 保存并应用」页脚按钮。
+	//
+	// 原因：本页的国家/地区清单只写进 uci 是不会生效的，必须再由
+	// /usr/bin/opengfw-geoip-helper apply 把它编译成 rules.yaml 里的
+	// geoip(...) 规则并触发引擎热重载。而 LuCI 默认的 handleSaveApply
+	// 只调用 uci.save() + uci.apply()，不会执行该 helper —— 结果就是
+	// uci 里已经出现 "all" 等新选项，rules.yaml 却仍是旧的，看似保存成功
+	// 实则规则未变。
+	//
+	// 因此参照本应用其它页面 (adblock.js / custom.js / rules.js) 的做法，
+	// 把这三个回调置为 null 以隐藏默认页脚，统一改用页面内置的
+	// 「💾 保存并立即热生效地区拦截规则」按钮：
+	//     uci.save() -> uci.apply() -> opengfw-geoip-helper apply
+	// -----------------------------------------------------------------------
+	handleSave: null,
+	handleSaveApply: null,
+	handleReset: null
 });
