@@ -257,6 +257,44 @@ const ALL_COUNTRIES = [
 	{ code: 'um', name: '美国本土外小岛屿 (UM)', flag: '🇺🇲' }
 ];
 
+// ---------------------------------------------------------------------------
+// 「全部国家与地区」伪代码 (ALL)
+// geoip.dat 中并不存在名为 "all" 的分类，因此该代码由后端辅助脚本
+// /usr/bin/opengfw-geoip-helper 特殊展开为「放行内网/私网 + 拦截其余全部境外 IP」规则，
+// 从而在不误伤局域网、SSH 与后台管理的前提下实现「一键封锁全世界」。
+// ---------------------------------------------------------------------------
+const ALL_SENTINEL = { code: 'all', name: '全部国家与地区 (全球 ALL)', flag: '🌍' };
+
+// 「全部」搜索关键词（中文 / 拼音 / 英文 / 代码），命中后即把 ALL_SENTINEL 置顶
+const ALL_KEYWORDS = [
+	'all', 'ALL', '全部', '所有', '全部国家', '所有国家', '全世界', '全球',
+	'世界', '全球所有', 'quanbu', 'suoyou', 'quanqiu', 'shijie', 'world', 'global', 'every'
+];
+
+// 判断输入的关键词是否意图命中「全部国家与地区」
+function matchAllKeyword(query) {
+	// 去掉所有空白，避免「全 部」这类带空格的输入无法命中
+	query = (query || '').replace(/\s+/g, '').toLowerCase();
+	if (query.length === 0) return false;
+	// 中文关键词 1 个字符即可命中（如「全」）；纯 ASCII 需 >= 3 个字符，
+	// 否则 "al"(阿尔巴尼亚 ISO 代码) 会误命中 "all"。
+	let hasCJK = /[\u4e00-\u9fa5]/.test(query);
+	let minLen = hasCJK ? 1 : 3;
+	if (query.length < minLen) return false;
+	for (let i = 0; i < ALL_KEYWORDS.length; i++) {
+		let k = ALL_KEYWORDS[i].toLowerCase();
+		if (k === query) return true;
+		// 前缀匹配：输入「全」/「所有」/「qua」/「glo」也能命中
+		if (k.indexOf(query) === 0) return true;
+	}
+	return false;
+}
+
+// 把「全部国家」加入动态列表
+function addAllCountries(dynlistEl) {
+	return addCountryToDynlist(dynlistEl, ALL_SENTINEL, true);
+}
+
 
 // 彻底解决主题下 alert-message 通知框无法点击关闭的 Bug (瞬时关闭 + 捕获阶段拦截)
 (function() {
@@ -321,6 +359,7 @@ const PINYIN_MAP = {
 };
 
 const COMMON_PRESETS = [
+	{ code: 'all', name: '全部国家与地区 (全球 ALL)', flag: '🌍' },
 	{ code: 'cn', name: '中国大陆 (CN)', flag: '🇨🇳' },
 	{ code: 'hk', name: '中国香港 (HK)', flag: '🇭🇰' },
 	{ code: 'mo', name: '中国澳门 (MO)', flag: '🇲🇴' },
@@ -408,10 +447,15 @@ function renderCountrySearchHelper(dynlistEl) {
 			return false;
 		});
 
+		// 「全部国家与地区」置顶：输入 全部/所有/全球/world/all 等关键词即出现
+		if (matchAllKeyword(query)) {
+			matches.unshift(ALL_SENTINEL);
+		}
+
 		if (matches.length === 0) {
 			resultsContainer.style.display = 'block';
 			dom.content(resultsContainer, E('div', { 'style': 'color: #888; text-align: center; padding: 12px; font-size: 13px;' }, [
-				_('未找到匹配 "') + query + _('" 的国家或地区。您可以直接在上方下拉框或输入框中手动键入任意国家代码。')
+				_('未找到匹配 "') + query + _('" 的国家或地区。您可以输入「全部」一键选中全世界，或直接在上方下拉框/输入框中手动键入任意国家代码。')
 			]));
 			return;
 		}
@@ -421,13 +465,15 @@ function renderCountrySearchHelper(dynlistEl) {
 			'style': 'display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px;'
 		}, matches.slice(0, 24).map(function(c) {
 			let isAdded = isCountrySelected(dynlistEl, c.code);
+			let isAll = (c.code === ALL_SENTINEL.code);
 			let itemCard = E('div', {
-				'style': 'background: rgba(255, 255, 255, 0.8); border: 1px solid ' + (isAdded ? '#28a745' : 'rgba(128, 128, 128, 0.25)') + '; border-radius: 5px; padding: 6px 10px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; transition: all 0.15s ease;'
+				'style': 'background: ' + (isAll ? 'rgba(0, 112, 243, 0.08)' : 'rgba(255, 255, 255, 0.8)') + '; border: 1px solid ' + (isAdded ? '#28a745' : (isAll ? '#0070f3' : 'rgba(128, 128, 128, 0.25)')) + '; border-radius: 5px; padding: 6px 10px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; transition: all 0.15s ease;' + (isAll ? ' grid-column: 1 / -1;' : '')
 			}, [
 				E('div', { 'style': 'display: flex; align-items: center; gap: 6px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;' }, [
 					E('span', { 'style': 'font-size: 16px;' }, c.flag),
-					E('span', { 'style': 'font-weight: 500;' }, c.name)
-				]),
+					E('span', { 'style': 'font-weight: ' + (isAll ? 'bold' : '500') + ';' }, c.name),
+					isAll ? E('span', { 'style': 'font-size: 11px; color: #0070f3; font-weight: normal;' }, _('（一键封锁全世界，自动放行内网与局域网）')) : null
+				].filter(Boolean)),
 				isAdded ? E('span', { 'style': 'font-size: 11px; color: #28a745; font-weight: bold; padding: 2px 6px;' }, '✓ 已选') :
 				E('button', {
 					'type': 'button',
@@ -438,7 +484,7 @@ function renderCountrySearchHelper(dynlistEl) {
 						addCountryToDynlist(dynlistEl, c, true);
 						renderSearchResults(searchInput.value);
 					}
-				}, '+ 选择')
+				}, isAll ? '🌍 选择全部' : '+ 选择')
 			]);
 
 			itemCard.addEventListener('click', function() {
@@ -458,6 +504,12 @@ function renderCountrySearchHelper(dynlistEl) {
 		if (ev.keyCode === 13) {
 			ev.preventDefault();
 			let query = (searchInput.value || '').trim().toLowerCase();
+			// 回车优先命中「全部国家与地区」
+			if (matchAllKeyword(query)) {
+				addAllCountries(dynlistEl);
+				renderSearchResults(searchInput.value);
+				return;
+			}
 			let firstMatch = ALL_COUNTRIES.find(function(c) {
 				return c.code === query || c.name.toLowerCase().indexOf(query) !== -1;
 			});
@@ -490,7 +542,17 @@ function renderCountrySearchHelper(dynlistEl) {
 		]));
 	});
 
-	let toolRow = E('div', { 'style': 'margin-top: 8px; display: flex; justify-content: flex-end; gap: 8px;' }, [
+	let toolRow = E('div', { 'style': 'margin-top: 8px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px;' }, [
+		E('button', {
+			'type': 'button',
+			'class': 'btn cbi-button cbi-button-action',
+			'style': 'padding: 3px 12px; font-size: 12px; font-weight: bold;',
+			'click': function(ev) {
+				ev.preventDefault();
+				addAllCountries(dynlistEl);
+				if (searchInput.value) renderSearchResults(searchInput.value);
+			}
+		}, _('🌍 一键选中全部国家与地区（所有国家）')),
 		E('button', {
 			'type': 'button',
 			'class': 'btn cbi-button cbi-button-remove',
@@ -636,7 +698,13 @@ return view.extend({
 							if (info.enabled) {
 								let modeText = (info.mode === 'whitelist') ? '白名单模式' : '黑名单模式';
 								let cList = (info.countries || '').trim().split(/\s+/).filter(Boolean);
-								elSt.innerHTML = '<span style="color: #28a745; font-weight: bold;">● 已开启 (' + modeText + '，已选 ' + cList.length + ' 个国家)</span>';
+								let hasAll = info.all_selected || cList.some(function(x) { return x.toLowerCase() === 'all'; });
+								if (hasAll) {
+									let others = cList.filter(function(x) { return x.toLowerCase() !== 'all'; }).length;
+									elSt.innerHTML = '<span style="color: #0070f3; font-weight: bold;">● 已开启 (' + modeText + '，🌍 全部国家与地区' + (others > 0 ? ' + 另 ' + others + ' 个' : '') + ')</span>';
+								} else {
+									elSt.innerHTML = '<span style="color: #28a745; font-weight: bold;">● 已开启 (' + modeText + '，已选 ' + cList.length + ' 个国家)</span>';
+								}
 							} else {
 								elSt.innerHTML = '<span style="color: #888;">● 未启用地区拦截</span>';
 							}
@@ -677,8 +745,10 @@ return view.extend({
 		o.description = _('【核心提示】默认已设为【外部连入源 IP】模式（它们访问不了我，我可以正常访问它们）。');
 
 		// 全球所有国家/地区选择列表
-		o = s.option(form.DynamicList, 'countries', _('管控国家与地区代码列表 (已收录全球全部 246 个国家和独立地区)'));
-		o.description = _('点击下拉框可直接选择全世界任意国家，支持无限添加；也可在下方搜索栏搜索国家后一键选择。');
+		o = s.option(form.DynamicList, 'countries', _('管控国家与地区代码列表 (已收录全球全部 246 个国家和独立地区，含「全部国家」选项)'));
+		o.description = _('点击下拉框可直接选择全世界任意国家，支持无限添加；也可在下方搜索栏搜索国家后一键选择。选择首项【🌍 全部国家与地区】或点击下方【🌍 一键选中全部国家与地区】按钮，即可一键封锁全世界（自动放行内网与局域网，不会断开 SSH 与后台管理）。');
+		// 下拉框首项：全部国家与地区（一键封锁全世界）
+		o.value(ALL_SENTINEL.code, ALL_SENTINEL.flag + ' ' + ALL_SENTINEL.name + ' — 一键封锁全世界');
 		ALL_COUNTRIES.forEach(function(c) {
 			o.value(c.code, c.flag + ' ' + c.name);
 		});

@@ -3,6 +3,80 @@
 chmod +x /etc/init.d/opengfw 2>/dev/null
 chmod +x /usr/bin/opengfw* 2>/dev/null
 
+# ---------------------------------------------------------------------------
+# LuCI 前端资源缓存击穿 (cache busting)
+#
+# 背景：Argon 主题的 header.ut 用静态的 {{ version.luciversion }} 作为 luci.js 的
+# ?v= 参数：
+#     <script src="{{ resource }}/luci.js?v={{ version.luciversion }}">
+# luci.js 在 LuCI.__init 中把该参数解析为 env.resource_version：
+#     const m = (s.getAttribute('src') ?? '').match(/^(.*)\/luci\.js(?:\?v=([^?]+))?$/);
+#     if (m) { setenv.base_url = m[1]; setenv.resource_version = m[2]; }
+# 之后在 LuCI.require() 中追加到每一个类加载请求：
+#     url = '%s/%s.js%s'.format(env.base_url, name.replace(/\./g, '/'),
+#                               env.resource_version ? `?v=${env.resource_version}` : '');
+#
+# 后果：只要 luciversion 不变，浏览器就一直复用
+#   /luci-static/resources/view/opengfw/*.js?v=<luciversion>
+# 这个 URL 的缓存（该路径无 Cache-Control，仅 ETag/Last-Modified，
+# 浏览器会启用启发式新鲜度），于是本插件更新视图文件后用户端看不到变化。
+#
+# 处理：给 luciversion 追加本插件专属后缀。后缀由视图目录 mtime 派生，
+# 因此每次随包更新视图文件都会自动获得新的缓存键；脚本可重复执行
+# （每次先剥离旧后缀再写入，不会层层叠加）。
+#
+# 说明：这里修改的是 luci-base 自带的两个版本常量文件，属侵入式做法。
+# 它对本插件是安全的：脚本幂等、原文件留有备份，且 luci-base 升级后
+# 常量会还原为官方值（仅退化为“需要手动强刷”的默认行为，不会坏掉）。
+# 重启 uwsgi/nginx 并不必要 —— 已验证 ucode 侧每次请求都会重新读取
+# version.uc，无需任何服务重启即可生效。
+# ---------------------------------------------------------------------------
+VIEWDIR="/www/luci-static/resources/view/opengfw"
+
+# 由视图目录 mtime 派生后缀；取不到则退回 .gfw1
+# 用秒级精度，避免同一分钟内的多次更新共用同一个缓存键
+STAMP=$(date -r "$VIEWDIR" +%Y%m%d%H%M%S 2>/dev/null)
+[ -n "$STAMP" ] || STAMP="1"
+SUFFIX=".gfw$STAMP"
+
+# 剥离历史后缀，保证幂等
+strip_suffix() {
+    echo "$1" | sed 's/\.gfw[0-9]\{1,\}$//'
+}
+
+# version.lua:  luciversion = "26.337.67860~daf821a"
+bump_lua_version() {
+    f="/usr/lib/lua/luci/version.lua"
+    [ -f "$f" ] || return 0
+
+    cur=$(sed -n 's/^luciversion[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | head -n1)
+    [ -n "$cur" ] || return 0
+
+    base=$(strip_suffix "$cur")
+    [ "$cur" = "$base$SUFFIX" ] && return 0   # 已是目标值，跳过
+
+    [ -f "$f.opengfw.bak" ] || cp -a "$f" "$f.opengfw.bak" 2>/dev/null
+    sed -i "s#^luciversion[[:space:]]*=[[:space:]]*\"[^\"]*\"#luciversion = \"$base$SUFFIX\"#" "$f" 2>/dev/null
+}
+
+# version.uc:  export const revision = '26.337.67860~daf821a', branch = '...';
+bump_uc_version() {
+    f="/usr/share/ucode/luci/version.uc"
+    [ -f "$f" ] || return 0
+
+    cur=$(sed -n "s/.*revision = '\([^']*\)'.*/\1/p" "$f" | head -n1)
+    [ -n "$cur" ] || return 0
+
+    base=$(strip_suffix "$cur")
+    [ "$cur" = "$base$SUFFIX" ] && return 0
+
+    [ -f "$f.opengfw.bak" ] || cp -a "$f" "$f.opengfw.bak" 2>/dev/null
+    sed -i "s#revision = '[^']*'#revision = '$base$SUFFIX'#" "$f" 2>/dev/null
+}
+
+bump_lua_version
+bump_uc_version
+
 # Register weekly cron update task (Monday 04:00 AM) if not present
 mkdir -p /etc/crontabs
 touch /etc/crontabs/root

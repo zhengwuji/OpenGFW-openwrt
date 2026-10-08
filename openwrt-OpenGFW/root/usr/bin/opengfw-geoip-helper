@@ -1,6 +1,11 @@
 #!/bin/sh
 # OpenGFW 全球国家/地区 IP 拦截辅助管理工具
 # 支持黑白名单模式切换、国家代码注入、自动更新 Cron 定时任务配置
+#
+# 特殊伪代码 "all"：表示「全部国家与地区（全球 ALL）」。
+#   geoip.dat 中并不存在名为 all 的分类，因此本脚本会把它特殊展开为
+#   「先放行内网/私网/保留地址，再拦截其余全部境外 IP」的规则组合，
+#   从而在封锁全世界的同时不误伤局域网、SSH 与后台管理通道。
 
 RULES_FILE="/etc/opengfw/rules.yaml"
 GEOIP_FILE="/etc/opengfw/geoip.dat"
@@ -9,6 +14,13 @@ CRON_FILE="/etc/crontabs/root"
 
 MARKER_START="# --- BEGIN_GEOIP_RULES ---"
 MARKER_END="# --- END_GEOIP_RULES ---"
+
+# 「全部国家」伪代码
+ALL_CODE="all"
+
+# 内网 / 私网 / 保留 / 链路本地地址段（IPv4 + IPv6）
+# 「全部国家」模式下必须先放行这些网段，否则会误伤局域网与管理通道
+PRIVATE_NETS="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 127.0.0.0/8 169.254.0.0/16 100.64.0.0/10 224.0.0.0/4 240.0.0.0/4 fc00::/7 fe80::/10 ::1/128"
 
 get_info() {
     local enabled mode direction countries autoupdate freq last_update fsize custom_urls custom_ips_count
@@ -35,12 +47,19 @@ get_info() {
         [ -n "$u" ] && url_count=$((url_count + 1))
     done
 
+    # 是否勾选了「全部国家与地区」
+    local all_selected="false"
+    for c in $countries; do
+        [ "$(echo "$c" | tr 'A-Z' 'a-z')" = "$ALL_CODE" ] && all_selected="true"
+    done
+
     cat <<EOF
 {
   "enabled": $([ "$enabled" = "1" ] && echo "true" || echo "false"),
   "mode": "$mode",
   "direction": "$direction",
   "countries": "$countries",
+  "all_selected": $all_selected,
   "custom_urls_count": $url_count,
   "custom_ips_count": $custom_ips_count,
   "autoupdate": $([ "$autoupdate" = "1" ] && echo "true" || echo "false"),
@@ -101,6 +120,63 @@ sync_custom_ips() {
     /usr/bin/opengfw-adblock-tool import-ip --url "$url_str" --name "custom_ips"
 }
 
+# 生成放行内网/私网网段的表达式
+# 用法: build_private_expr <ip.src|ip.dst>
+build_private_expr() {
+    local field="$1" expr="" n
+    for n in $PRIVATE_NETS; do
+        if [ -z "$expr" ]; then
+            expr="cidr(${field}, \"${n}\")"
+        else
+            expr="$expr || cidr(${field}, \"${n}\")"
+        fi
+    done
+    echo "$expr"
+}
+
+# 生成「全部国家与地区」对应的规则片段（放行私网 + 放行管理端口 + 拦截其余全部境外 IP）
+# 返回值写入全局变量 ALL_BLOCK_SNIPPET
+#
+# 重要：该片段会被插入到 rules.yaml 的「# 1. 核心基础设施」之前，
+# 因此必须在本片段内自行放行 SSH 与后台管理端口，否则 expr: true 会把管理通道一起切断，
+# 导致用户被锁在设备之外。
+build_all_countries_snippet() {
+    local direction="$1" mode="$2"
+    local src_expr dst_expr
+    src_expr=$(build_private_expr "ip.src")
+    dst_expr=$(build_private_expr "ip.dst")
+
+    ALL_BLOCK_SNIPPET=""
+
+    if [ "$mode" = "whitelist" ]; then
+        # 白名单模式下选择「全部国家」= 放行全世界，因此只放行私网、不做任何拦截
+        ALL_BLOCK_SNIPPET="${ALL_BLOCK_SNIPPET}- name: 地区白名单-全部国家(放行私网与全球所有IP)\n  action: allow\n  expr: true\n\n"
+        return 0
+    fi
+
+    case "$direction" in
+        "src")
+            # 仅拦截「外部连入」：源地址不是私网的入站流量全部阻断
+            ALL_BLOCK_SNIPPET="${ALL_BLOCK_SNIPPET}- name: 地区黑名单-全部国家(放行内网源地址)\n  action: allow\n  expr: ${src_expr}\n\n"
+            ;;
+        "both")
+            # 双向彻底切断：仅放行「源与目的都在内网」的流量，其余全部阻断
+            ALL_BLOCK_SNIPPET="${ALL_BLOCK_SNIPPET}- name: 地区黑名单-全部国家(放行内网互访)\n  action: allow\n  expr: (${src_expr}) && (${dst_expr})\n\n"
+            ;;
+        *)
+            # 仅拦截「访问外网」：目的地址不是私网的出站流量全部阻断
+            ALL_BLOCK_SNIPPET="${ALL_BLOCK_SNIPPET}- name: 地区黑名单-全部国家(放行内网目的地址)\n  action: allow\n  expr: ${dst_expr}\n\n"
+            ;;
+    esac
+
+    # 安全兜底：放行 SSH 与路由器后台管理端口，避免用户被锁在设备之外
+    # (该片段插入位置在「# 1. 核心基础设施」之前，故必须在此重复声明)
+    ALL_BLOCK_SNIPPET="${ALL_BLOCK_SNIPPET}- name: 地区黑名单-全部国家(安全兜底-放行SSH)\n  action: allow\n  expr: port.dst == 22 || port.src == 22\n\n"
+    ALL_BLOCK_SNIPPET="${ALL_BLOCK_SNIPPET}- name: 地区黑名单-全部国家(安全兜底-放行路由器后台管理)\n  action: allow\n  expr: (port.dst == 80 || port.dst == 443) && (cidr(ip.dst, \"10.0.0.0/8\") || cidr(ip.dst, \"172.16.0.0/12\") || cidr(ip.dst, \"192.168.0.0/16\"))\n\n"
+
+    ALL_BLOCK_SNIPPET="${ALL_BLOCK_SNIPPET}- name: 地区黑名单-阻断全部国家与地区(全球 ALL)\n  action: block\n  log: true\n  expr: true\n\n"
+}
+
 apply_rules() {
     local enabled mode direction raw_countries raw_custom_urls
     enabled=$(uci -q get opengfw.geoip.enabled || echo "0")
@@ -116,32 +192,51 @@ apply_rules() {
 
     if [ "$enabled" = "1" ] && { [ -n "$raw_countries" ] || [ -n "$raw_custom_urls" ]; }; then
         local block_snippet=""
+        local has_all="0"
         block_snippet="$MARKER_START\n# 全球国家/地区与自定义 IP 拦截规则 (由控制面板自动生成，请勿手动编辑该块)\n"
+
+        # 预处理：识别「全部国家」伪代码
+        local norm_countries=""
+        for c in $raw_countries; do
+            c_low=$(echo "$c" | tr 'A-Z' 'a-z' | tr -d ' ,')
+            [ -z "$c_low" ] && continue
+            if [ "$c_low" = "$ALL_CODE" ]; then
+                has_all="1"
+            else
+                norm_countries="$norm_countries $c_low"
+            fi
+        done
 
         if [ "$mode" = "whitelist" ]; then
             # 白名单模式：放行内网私网地址与指定国家，其余全部阻断
             block_snippet="${block_snippet}- name: 地区白名单-放行私网网段\n  action: allow\n  expr: cidr(ip.dst, \"10.0.0.0/8\") || cidr(ip.dst, \"172.16.0.0/12\") || cidr(ip.dst, \"192.168.0.0/16\") || cidr(ip.dst, \"127.0.0.0/8\")\n\n"
-            for c in $raw_countries; do
-                c_low=$(echo "$c" | tr 'A-Z' 'a-z' | tr -d ' ,')
-                [ -z "$c_low" ] && continue
-                block_snippet="${block_snippet}- name: 地区白名单-放行${c}\n  action: allow\n  expr: geoip(ip.dst, \"${c_low}\")\n\n"
+            for c in $norm_countries; do
+                block_snippet="${block_snippet}- name: 地区白名单-放行${c}\n  action: allow\n  expr: geoip(ip.dst, \"${c}\")\n\n"
             done
-            block_snippet="${block_snippet}- name: 地区白名单-阻断未列出的所有其他境外IP\n  action: block\n  log: true\n  expr: true\n\n"
+            if [ "$has_all" = "1" ]; then
+                # 选择了「全部国家」→ 等于放行全世界，不再追加兜底阻断
+                block_snippet="${block_snippet}- name: 地区白名单-全部国家(放行全球所有IP)\n  action: allow\n  expr: true\n\n"
+            else
+                block_snippet="${block_snippet}- name: 地区白名单-阻断未列出的所有其他境外IP\n  action: block\n  log: true\n  expr: true\n\n"
+            fi
         else
             # 黑名单模式：阻断列表中所有国家
-            for c in $raw_countries; do
-                c_low=$(echo "$c" | tr 'A-Z' 'a-z' | tr -d ' ,')
-                [ -z "$c_low" ] && continue
+            if [ "$has_all" = "1" ]; then
+                # 「全部国家」= 放行私网 + 拦截其余全部境外 IP
+                build_all_countries_snippet "$direction" "$mode"
+                block_snippet="${block_snippet}${ALL_BLOCK_SNIPPET}"
+            fi
+            for c in $norm_countries; do
                 local expr_str=""
                 case "$direction" in
                     "src")
-                        expr_str="geoip(ip.src, \"${c_low}\")"
+                        expr_str="geoip(ip.src, \"${c}\")"
                         ;;
                     "both")
-                        expr_str="geoip(ip.dst, \"${c_low}\") || geoip(ip.src, \"${c_low}\")"
+                        expr_str="geoip(ip.dst, \"${c}\") || geoip(ip.src, \"${c}\")"
                         ;;
                     *)
-                        expr_str="geoip(ip.dst, \"${c_low}\")"
+                        expr_str="geoip(ip.dst, \"${c}\")"
                         ;;
                 esac
                 block_snippet="${block_snippet}- name: 地区黑名单-阻断${c}\n  action: block\n  log: true\n  expr: ${expr_str}\n\n"
@@ -174,6 +269,9 @@ apply_rules() {
         else
             cat /tmp/geoip_snippet.yaml >> "$RULES_FILE"
             rm -f /tmp/geoip_snippet.yaml
+        fi
+        if [ "$has_all" = "1" ]; then
+            echo "[+] 已生成【全部国家与地区(全球 ALL)】拦截规则（自动放行内网/私网/保留地址）并优先注入 rules.yaml"
         fi
         echo "[+] 全球国家与自定义 IP 拦截规则已生成并优先注入 rules.yaml"
 
@@ -210,4 +308,3 @@ case "$1" in
         echo "用法: $0 {get|apply|sync-custom-ips|cron}"
         ;;
 esac
-

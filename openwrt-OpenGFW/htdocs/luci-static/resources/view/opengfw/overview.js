@@ -544,7 +544,7 @@ return view.extend({
 
 			let inputIp = E('input', {
 				'type': 'text',
-				'placeholder': '例如: 10.10.10.117',
+				'placeholder': '例如: 192.168.1.100',
 				'class': 'cbi-input-text',
 				'style': 'max-width: 150px; margin-right: 8px;'
 			});
