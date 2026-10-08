@@ -9,6 +9,41 @@ const LOG_FILE = '/var/log/opengfw.log';
 const HELPER = '/usr/bin/opengfw-custom-helper';
 const CUSTOM_JSON_PATH = '/etc/opengfw/custom_rules.json';
 
+// 判断是否为内网 / 私网 / 保留地址（IPv4 + IPv6）。
+// 用于在「日志审计」中区分内外网地址：只有外部地址才提供「一键拦截 IP」入口。
+// 覆盖 RFC1918、回环、链路本地、CGNAT 以及 IPv6 ULA / 链路本地 / 回环。
+function isPrivateIp(addr) {
+	if (!addr || addr === '-') return false;
+	let s = String(addr).toLowerCase();
+
+	// IPv6 形式 (含两个以上 ':'，覆盖 "::1" 这类以冒号开头的简写)
+	if (s.split(':').length > 2) {
+		// 去掉 [..] 包裹与 :port 后缀，仅保留地址用于判断
+		let a = s.replace(/^\[/, '').replace(/\]$/, '');
+		if (a === '::1' || a === '::') return true;
+		if (a.indexOf('fe80:') === 0) return true;   // 链路本地 fe80::/10
+		if (a.indexOf('fc') === 0 || a.indexOf('fd') === 0) return true; // ULA fc00::/7
+		return false;
+	}
+
+	let host = s.split(':')[0];                      // IPv4 去掉 :port
+	if (!host) return false;
+
+	let p = host.split('.');
+	if (p.length !== 4) return false;
+	let n = p.map(function(x) { return parseInt(x, 10); });
+	if (n.some(function(x) { return isNaN(x) || x < 0 || x > 255; })) return false;
+
+	if (n[0] === 10) return true;                                   // 10.0.0.0/8
+	if (n[0] === 127) return true;                                  // 127.0.0.0/8
+	if (n[0] === 172 && n[1] >= 16 && n[1] <= 31) return true;      // 172.16.0.0/12
+	if (n[0] === 192 && n[1] === 168) return true;                  // 192.168.0.0/16
+	if (n[0] === 169 && n[1] === 254) return true;                  // 169.254.0.0/16
+	if (n[0] === 100 && n[1] >= 64 && n[1] <= 127) return true;     // 100.64.0.0/10 CGNAT
+	if (n[0] === 0) return true;                                    // 0.0.0.0/8
+	return false;
+}
+
 // 彻底解决主题下 alert-message 通知框无法点击关闭的 Bug
 (function() {
 	try {
@@ -395,7 +430,7 @@ return view.extend({
 						'title': _('将此域名一键加入自定义拦截黑名单'),
 						'click': function() { quickBlockTarget('domain', it.domain); }
 					}, _('➕ 拦截'));
-				} else if (it.src !== '-' && it.src.indexOf('10.10.10.') === -1 && it.src.indexOf('192.168.') === -1 && it.src.indexOf('127.') === -1) {
+				} else if (it.src !== '-' && !isPrivateIp(it.src)) {
 					let cleanIP = it.src.split(':')[0];
 					opBtn = E('button', {
 						'class': 'btn cbi-button cbi-button-reset',
