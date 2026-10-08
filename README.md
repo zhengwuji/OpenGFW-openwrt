@@ -18,6 +18,7 @@ OpenGFW 是一款运行在 Linux / OpenWrt 软路由环境下的**高性能 7 �
 6. [安装与快速上手教程 (含一键安装 IPK)](#五安装与快速上手教程)
 7. [命令行高级运维速查](#六命令行高级运维速查)
 8. [常见问题解答 (FAQ)](#七常见问题解答-faq)
+9. [上游溯源与同步说明](#八上游溯源与同步说明-upstream-tracking)
 
 ---
 
@@ -257,6 +258,71 @@ opengfw-update-dat
 
 ### Q3: 为什么路由器重启后拦截计数器归零了？
 **A**: 这是 OpenWrt 官方的设计机制，`/var/log` 挂载在内存虚拟盘（tmpfs）中以保护软路由存储颗粒不受频繁写入磨损。您的所有规则配置、已导入的 50万+ 广告库以及白名单均永久保存在 `/etc/opengfw/` 中，系统重启后会自动加载，防护功能持续有效。
+
+---
+
+## 八、上游溯源与同步说明 (Upstream Tracking)
+
+> ⚠️ **重要：本仓库 `upstream` 指向的 `HyNetworks/OpenGFW` 并非第三方 Fork，它就是 OpenGFW 原作者 apernet 的官方仓库。**
+> 原地址 `github.com/apernet/OpenGFW` 已下线（返回 404），项目整体迁移至该组织账号下继续维护。
+
+### 8.1 关于项目状态
+
+根据上游 README 的官方说明，OpenGFW 已被原作者主动下架过一次，原因是有与官方关系密切、对外销售审查方案的公司抄袭其代码并入自有产品，这与项目「网络研究 / 广告拦截 / 家长控制」的初衷相悖；经社区沟通后重新公开。同时官方明确表示：
+
+> *For now, we do not plan to actively continue developing OpenGFW ourselves. Instead, we intend to focus more of our efforts on Hysteria and other upcoming anti-censorship projects. However, if members of the community would like to continue developing OpenGFW, they are more than welcome to do so.*
+
+即**上游已进入维护模式**：原作者重心转向 Hysteria 等反审查项目，对 OpenGFW 只会合并社区 PR、按需发版，不再主动开发新功能。
+
+### 8.2 同步状态核对方法
+
+```sh
+# 1. 拉取上游最新提交与标签
+git fetch upstream --tags --prune
+
+# 2. 查看上游 master 的最新提交
+git log -1 --format="%H %ad %s" --date=iso upstream/master
+
+# 3. 计算分叉点，确认落后 / 领先多少个提交
+MB=$(git merge-base main upstream/master)
+echo "落后上游: $(git rev-list --count $MB..upstream/master) 个提交"
+echo "领先上游: $(git rev-list --count $MB..main) 个提交"
+
+# 4. 确认上游最新 Release
+git ls-remote --tags upstream
+```
+
+### 8.3 当前基线（截至最近一次核对）
+
+| 项目 | 值 |
+| --- | --- |
+| 上游仓库 | `https://github.com/HyNetworks/OpenGFW` |
+| 上游 master | `581518071fbe72519887fc92250df31d86b4386c`（2026-10-04） |
+| 分叉基点 | `5815180` —— 与上游 master 一致，**落后 0 个提交** |
+| 上游最新 Release | `v0.4.3`（2026-10-04，为分叉点的祖先，已包含） |
+| 本仓库增量 | OpenWrt 适配层（LuCI 面板、helper 脚本、打包与 CI 工作流） |
+
+### 8.4 我们在上游之上做的核心改动
+
+上游进入维护模式后，本仓库承担了「OpenWrt 化 + 功能补强 + 安全维护」的角色。除 `openwrt-OpenGFW/` 整层新增外，对上游 Go 源码有三处必要补丁：
+
+1. **`ruleset/expr.go` —— 规则表达式环境补强**  
+   将 `tls.sni` / `quic.sni` / `http.host` / `dns.name` 提升为可直接引用的扁平字段，并补充 `ip.protocol`、`tcp.*`、`udp.*` 等字段；同时把 `geoip` / `geosite` / `cidr` 三个内建函数改为带类型与空值防御的实现，避免上游 `params[0].(string)` 直接断言在空值时 panic。
+
+2. **`io/nfqueue.go` —— 入站流量接管**  
+   非 local 模式下新增 `PREROUTING`（nftables）与 `mangle/PREROUTING`（iptables）链挂载并放行 `lo`，使**外部连入**流量也能进入 DPI 判定，而不是只处理 `FORWARD` 出站流量。这是「国别入站拦截」与「防御外部扫描」得以成立的前提。
+
+3. **依赖安全维护 —— `github.com/expr-lang/expr` 升级至 `v1.17.8`**  
+   上游锁定在 `v1.16.3`，存在两个已披露漏洞：
+
+   | 编号 | 问题 | 修复版本 |
+   | --- | --- | --- |
+   | GO-2025-4245 | Expr 内建函数无界递归导致拒绝服务 | v1.17.7 |
+   | GO-2025-3525 | Expr 解析器处理无限制输入导致内存耗尽 | v1.17.0 |
+
+   触发路径位于 `ruleset/expr.go` 的 `expr.Compile` 与 `vm.Run`（规则匹配主链路）。本仓库升级至 `v1.17.8` 后 `govulncheck ./...` 报告 **No vulnerabilities found**。
+
+   升级已通过以下验证：`go build ./...`（linux/amd64）通过；全量 `go test ./...` 结果与升级前逐项一致；**真实投放的 `rules.yaml` 与「全部国家」生成版规则集均编译通过**；自定义 `expr` Patcher（`cidr` 常量折叠）与内建函数注册路径行为不变。
 
 ---
 
