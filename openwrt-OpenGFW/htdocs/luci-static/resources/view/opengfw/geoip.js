@@ -295,6 +295,73 @@ function addAllCountries(dynlistEl) {
 	return addCountryToDynlist(dynlistEl, ALL_SENTINEL, true);
 }
 
+// ---------------------------------------------------------------------------
+// 修复一：Argon 主题下动态列表的「×」删除按钮点不动
+//
+// Argon 的 cascade.css 把 .cbi-dynlist > .item 设为 pointer-events: none，
+// 只把 ::after（那个红色 × ）设为 auto，本意是让只有红叉可点。
+// 但 Chromium 不会把 pointer-events:none 元素的伪元素当作命中测试目标，
+// 于是点击红叉时 elementFromPoint 命中的是父级 .cbi-dynlist，
+// ui.js 的 handleClick 中 findParent(ev.target, '.item') 匹配失败，
+// 表现为「点 × 没有任何反应」。
+//
+// 把 .item 恢复为 auto 即可（这也是 LuCI 原生 bootstrap 主题的行为）。
+// 实测：点击右侧红叉可正常删除；点击左侧标签区不会误删
+// （ui.js 依据 rect.right - clientX <= ::after 宽度 判定，左半边距离足够大）。
+// ---------------------------------------------------------------------------
+(function() {
+	try {
+		if (document.getElementById('opengfw-dynlist-pointer-fix')) return;
+		let st = document.createElement('style');
+		st.id = 'opengfw-dynlist-pointer-fix';
+		st.textContent = '.cbi-dynlist > .item { pointer-events: auto !important; }';
+		(document.head || document.documentElement).appendChild(st);
+	} catch (e) {}
+})();
+
+// ---------------------------------------------------------------------------
+// 修复二：保存时 uci.apply() 报 ubus code 5 (UBUS_STATUS_NO_DATA)
+//
+// 本页自定义保存按钮此前直接调用 uci.save()。但 uci.save() 只负责把
+// uci 内部状态中已登记的变更通过 RPC 写出去；而「把 DOM 表单值读回该状态」
+// 是 CBI 表单 parse() 的职责。缺了 parse() 这一步，save() 会发出 0 个
+// uci/set 请求，紧接着的 uci.apply() 因没有任何待应用变更而返回
+// code 5 (NO_DATA)，界面便弹出「应用出错」。
+//
+// 正确做法与 LuCI 原生 handleSave 完全一致：先调用各 cbi-map 实例的
+// save()（其内部实现即 parse() -> data.save()），再执行 uci.apply()。
+// ---------------------------------------------------------------------------
+function saveAllMaps() {
+	let maps = document.querySelectorAll('#maincontent .cbi-map');
+	if (!maps.length) maps = document.querySelectorAll('.cbi-map');
+	let tasks = [];
+	for (let i = 0; i < maps.length; i++) {
+		let inst = dom.findClassInstance(maps[i]);
+		if (inst && typeof inst.save === 'function') {
+			tasks.push(inst.save());
+		} else {
+			tasks.push(dom.callClassMethod(maps[i], 'save'));
+		}
+	}
+	return Promise.all(tasks);
+}
+
+// 判断是否为「没有待应用变更」这一无害情形（ubus code 5 / NO_DATA）
+function isNoDataError(err) {
+	if (!err) return false;
+	if (err === 5 || err.code === 5) return true;
+	let s = (err.message != null) ? String(err.message) : String(err);
+	return /code 5\b|NO_DATA|No data received/i.test(s);
+}
+
+// 应用 uci 变更；确实没有变更时静默通过，避免弹出无意义的「应用出错」
+function applyUci() {
+	return uci.apply().catch(function(err) {
+		if (isNoDataError(err)) return null;
+		throw err;
+	});
+}
+
 
 // 彻底解决主题下 alert-message 通知框无法点击关闭的 Bug (瞬时关闭 + 捕获阶段拦截)
 (function() {
@@ -799,8 +866,8 @@ return view.extend({
 							ui.showModal(_('正在同步自定义 IP 订阅'), [
 								E('p', { 'class': 'spinning' }, _('正在下载并解析上方所有自定义订阅链接中的 IP 网段，请稍候...'))
 							]);
-							return uci.save().then(function() {
-								return uci.apply();
+							return saveAllMaps().then(function() {
+								return applyUci();
 							}).then(function() {
 								return fs.exec_direct('/usr/bin/opengfw-geoip-helper', ['sync-custom-ips']);
 							}).then(function(res) {
@@ -941,8 +1008,8 @@ return view.extend({
 						ui.showModal(_('正在应用配置'), [
 							E('p', { 'class': 'spinning' }, _('正在将国家地区拦截规则与自定义 IP 订阅编译并注入 OpenGFW 引擎...'))
 						]);
-						return uci.save().then(function() {
-							return uci.apply();
+						return saveAllMaps().then(function() {
+							return applyUci();
 						}).then(function() {
 							return fs.exec_direct('/usr/bin/opengfw-geoip-helper', ['apply']);
 						}).then(function() {
