@@ -316,7 +316,8 @@ function addAllCountries(dynlistEl) {
 		let st = document.createElement('style');
 		st.id = 'opengfw-dynlist-pointer-fix';
 		st.textContent = [
-			'.cbi-dynlist > .item { pointer-events: auto !important; cursor: default !important; }',
+			'.cbi-dynlist > .item { width: fit-content !important; max-width: fit-content !important; display: inline-flex !important; align-items: stretch !important; pointer-events: auto !important; cursor: default !important; }',
+			'.cbi-dynlist > .item > span { user-select: none !important; }',
 			'.cbi-dynlist > .item::after { pointer-events: auto !important; cursor: pointer !important; transition: filter 0.15s ease, background-color 0.15s ease, transform 0.1s ease !important; }',
 			'.cbi-dynlist > .item::after:hover { filter: brightness(1.15) !important; background-color: #e02447 !important; }',
 			'.cbi-dynlist > .item::after:active { transform: scale(0.96) !important; }'
@@ -324,7 +325,7 @@ function addAllCountries(dynlistEl) {
 		(document.head || document.documentElement).appendChild(st);
 	} catch (e) {}
 
-	// 全局捕获阶段委托：点击红叉删除区（item 右侧 48px 内）100% 触发删除
+	// 全局捕获阶段委托：点击红叉删除区 100% 触发删除
 	if (!window._opengfw_dynlist_click_bound) {
 		window._opengfw_dynlist_click_bound = true;
 		document.addEventListener('click', function(ev) {
@@ -350,9 +351,22 @@ function addAllCountries(dynlistEl) {
 			let dl = (item.closest && item.closest('.cbi-dynlist')) || item.parentNode;
 			if (!dl || !dl.classList || !dl.classList.contains('cbi-dynlist')) return;
 
-			let rect = item.getBoundingClientRect();
-			// 点击在红叉区域（右边缘 48px 内，且在 item 范围内部）
-			if ((rect.right - ev.clientX <= 48 || ev.clientX >= rect.right - 48) && ev.clientX >= rect.left) {
+			let span = item.querySelector('span');
+			let spanRect = span ? span.getBoundingClientRect() : null;
+			let itemRect = item.getBoundingClientRect();
+
+			// 核心精准判定：点击在红叉删除按钮区域！
+			// 红叉在视觉上紧挨着 span 的右侧，宽度为 40px（2.5rem）。
+			// 1) 基于 span 右边缘计算：spanRect.right - 4px 到 spanRect.right + 48px
+			// 2) 基于 item 右边缘计算：itemRect.right - 48px 到 itemRect.right + 4px
+			let isClickOnRedX = false;
+			if (spanRect && ev.clientX >= (spanRect.right - 4) && ev.clientX <= (spanRect.right + 48)) {
+				isClickOnRedX = true;
+			} else if (itemRect && (itemRect.right - ev.clientX <= 48) && ev.clientX >= itemRect.left) {
+				isClickOnRedX = true;
+			}
+
+			if (isClickOnRedX) {
 				let valInput = item.querySelector('input[type="hidden"]');
 				let val = valInput ? valInput.value : '';
 				let inst = dom.findClassInstance(dl);
@@ -375,6 +389,11 @@ function addAllCountries(dynlistEl) {
 						bubbles: true,
 						detail: { instance: inst, element: dl, value: val, add: false }
 					}));
+				}
+				// 立即清除可能产生的文本高亮，防止弹出浏览器翻译/朗读工具栏
+				if (window.getSelection) {
+					let sel = window.getSelection();
+					if (sel) sel.removeAllRanges();
 				}
 				ev.stopPropagation();
 				ev.preventDefault();
