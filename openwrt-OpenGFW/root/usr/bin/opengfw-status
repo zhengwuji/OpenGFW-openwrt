@@ -79,7 +79,7 @@ if [ -f "$LOG_FILE" ]; then
     # 日志自动防爆内存轮转 (超过 3MB 保留最新 3000 行)
     fsize=$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)
     if [ "$fsize" -gt 3145728 ]; then
-        tail -n 3000 "$LOG_FILE" > "${LOG_FILE}.tmp" && mv -f "${LOG_FILE}.tmp" "$LOG_FILE"
+        tail -n 3000 "$LOG_FILE" > "${LOG_FILE}.tmp" && cat "${LOG_FILE}.tmp" > "$LOG_FILE" && rm -f "${LOG_FILE}.tmp"
     fi
 
     ADS_BLOCKED=$(grep -icE '拦截广告|adblock|block ads' "$LOG_FILE" 2>/dev/null || echo 0)
