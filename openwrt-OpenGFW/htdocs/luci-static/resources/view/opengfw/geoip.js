@@ -311,32 +311,73 @@ function addAllCountries(dynlistEl) {
 // ---------------------------------------------------------------------------
 (function() {
 	try {
-		if (document.getElementById('opengfw-dynlist-pointer-fix')) return;
+		let existing = document.getElementById('opengfw-dynlist-pointer-fix');
+		if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
 		let st = document.createElement('style');
 		st.id = 'opengfw-dynlist-pointer-fix';
-		st.textContent = '.cbi-dynlist > .item { pointer-events: auto !important; cursor: pointer; }';
+		st.textContent = [
+			'.cbi-dynlist > .item { pointer-events: auto !important; cursor: default !important; }',
+			'.cbi-dynlist > .item::after { pointer-events: auto !important; cursor: pointer !important; transition: filter 0.15s ease, background-color 0.15s ease, transform 0.1s ease !important; }',
+			'.cbi-dynlist > .item::after:hover { filter: brightness(1.15) !important; background-color: #e02447 !important; }',
+			'.cbi-dynlist > .item::after:active { transform: scale(0.96) !important; }'
+		].join('\n');
 		(document.head || document.documentElement).appendChild(st);
 	} catch (e) {}
 
-	// 全局捕获阶段委托：点击红叉删除区（item 右侧 45px 内）100% 触发删除
+	// 全局捕获阶段委托：点击红叉删除区（item 右侧 48px 内）100% 触发删除
 	if (!window._opengfw_dynlist_click_bound) {
 		window._opengfw_dynlist_click_bound = true;
 		document.addEventListener('click', function(ev) {
 			let t = ev.target;
 			if (!t) return;
-			let item = t.closest ? t.closest('.item') : null;
+			let item = (t.closest && t.closest('.item')) || null;
+			if (!item) {
+				// 兜底方案：如果点击命中了 .cbi-dynlist 父容器（在部分未恢复 pointer-events 的旧主题或怪异浏览器下）
+				let dlCandidate = (t.closest && t.closest('.cbi-dynlist')) || ((t.classList && t.classList.contains('cbi-dynlist')) ? t : null);
+				if (dlCandidate) {
+					let allItems = dlCandidate.querySelectorAll('.item');
+					for (let i = 0; i < allItems.length; i++) {
+						let r = allItems[i].getBoundingClientRect();
+						if (ev.clientY >= r.top && ev.clientY <= r.bottom &&
+						    ev.clientX >= r.left && ev.clientX <= r.right + 2) {
+							item = allItems[i];
+							break;
+						}
+					}
+				}
+			}
 			if (!item) return;
-			let dl = item.closest('.cbi-dynlist');
-			if (!dl) return;
+			let dl = (item.closest && item.closest('.cbi-dynlist')) || item.parentNode;
+			if (!dl || !dl.classList || !dl.classList.contains('cbi-dynlist')) return;
+
 			let rect = item.getBoundingClientRect();
-			// 点击在红叉区域（右边缘 45px 内）
-			if (rect.right - ev.clientX <= 45 && ev.clientX >= rect.left) {
+			// 点击在红叉区域（右边缘 48px 内，且在 item 范围内部）
+			if ((rect.right - ev.clientX <= 48 || ev.clientX >= rect.right - 48) && ev.clientX >= rect.left) {
+				let valInput = item.querySelector('input[type="hidden"]');
+				let val = valInput ? valInput.value : '';
 				let inst = dom.findClassInstance(dl);
 				if (inst && typeof inst.removeItem === 'function') {
 					inst.removeItem(dl, item);
-					ev.stopPropagation();
-					ev.preventDefault();
+				} else {
+					if (val) {
+						let sb = dl.querySelector('.cbi-dropdown');
+						if (sb) {
+							sb.querySelectorAll('ul > li').forEach(function(li) {
+								if (li.getAttribute('data-value') === val) {
+									if (li.hasAttribute('dynlistcustom')) li.remove();
+									else li.removeAttribute('unselectable');
+								}
+							});
+						}
+					}
+					item.remove();
+					dl.dispatchEvent(new CustomEvent('cbi-dynlist-change', {
+						bubbles: true,
+						detail: { instance: inst, element: dl, value: val, add: false }
+					}));
 				}
+				ev.stopPropagation();
+				ev.preventDefault();
 			}
 		}, true);
 	}
@@ -596,6 +637,12 @@ function renderCountrySearchHelper(dynlistEl) {
 
 	searchInput.addEventListener('input', function() {
 		renderSearchResults(searchInput.value);
+	});
+
+	dynlistEl.addEventListener('cbi-dynlist-change', function() {
+		if (searchInput.value) {
+			renderSearchResults(searchInput.value);
+		}
 	});
 
 	searchInput.addEventListener('keydown', function(ev) {
