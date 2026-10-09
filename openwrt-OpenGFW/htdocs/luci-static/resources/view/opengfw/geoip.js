@@ -314,9 +314,32 @@ function addAllCountries(dynlistEl) {
 		if (document.getElementById('opengfw-dynlist-pointer-fix')) return;
 		let st = document.createElement('style');
 		st.id = 'opengfw-dynlist-pointer-fix';
-		st.textContent = '.cbi-dynlist > .item { pointer-events: auto !important; }';
+		st.textContent = '.cbi-dynlist > .item { pointer-events: auto !important; cursor: pointer; }';
 		(document.head || document.documentElement).appendChild(st);
 	} catch (e) {}
+
+	// 全局捕获阶段委托：点击红叉删除区（item 右侧 45px 内）100% 触发删除
+	if (!window._opengfw_dynlist_click_bound) {
+		window._opengfw_dynlist_click_bound = true;
+		document.addEventListener('click', function(ev) {
+			let t = ev.target;
+			if (!t) return;
+			let item = t.closest ? t.closest('.item') : null;
+			if (!item) return;
+			let dl = item.closest('.cbi-dynlist');
+			if (!dl) return;
+			let rect = item.getBoundingClientRect();
+			// 点击在红叉区域（右边缘 45px 内）
+			if (rect.right - ev.clientX <= 45 && ev.clientX >= rect.left) {
+				let inst = dom.findClassInstance(dl);
+				if (inst && typeof inst.removeItem === 'function') {
+					inst.removeItem(dl, item);
+					ev.stopPropagation();
+					ev.preventDefault();
+				}
+			}
+		}, true);
+	}
 })();
 
 // ---------------------------------------------------------------------------
@@ -351,7 +374,7 @@ function isNoDataError(err) {
 	if (!err) return false;
 	if (err === 5 || err.code === 5) return true;
 	let s = (err.message != null) ? String(err.message) : String(err);
-	return /code 5\b|NO_DATA|No data received/i.test(s);
+	return /code 5\b|NO_DATA|No data received|未收到数据|没有数据/i.test(s);
 }
 
 // 应用 uci 变更；确实没有变更时静默通过，避免弹出无意义的「应用出错」
@@ -457,6 +480,14 @@ function isCountrySelected(dynlistEl, code) {
 }
 
 function addCountryToDynlist(dynlistEl, c, toastMsg) {
+	if (c.code === 'all') {
+		let modeSelect = document.querySelector('select[name="cbid.opengfw.geoip.mode"]');
+		let isBlacklist = !modeSelect || modeSelect.value === 'blacklist';
+		if (isBlacklist) {
+			ui.addNotification(null, E('p', {}, '⚠️ 【黑名单模式】下不支持添加「全部国家」，否则会阻断全球流量导致断网！如需仅允许特定国家（如中国），请将策略切换为【白名单模式】。'), 'danger');
+			return false;
+		}
+	}
 	if (isCountrySelected(dynlistEl, c.code)) {
 		if (toastMsg) ui.addNotification(null, E('p', {}, '⚠️ ' + c.flag + ' ' + c.name + ' 已在列表中，无需重复添加'), 'warning');
 		return false;

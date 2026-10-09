@@ -107,7 +107,7 @@ stop_service() {
 
 reload_service() {
 	local pid
-	pid=$(pidof opengfw)
+	pid=$(pidof /usr/bin/opengfw 2>/dev/null || pidof opengfw 2>/dev/null)
 	if [ -n "$pid" ]; then
 		kill -HUP "$pid" 2>/dev/null
 		logger -t opengfw "OpenGFW rules reloaded via SIGHUP (PID: $pid)"

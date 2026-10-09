@@ -152,29 +152,13 @@ build_all_countries_snippet() {
         # 白名单模式下选择「全部国家」= 放行全世界，因此只放行私网、不做任何拦截
         ALL_BLOCK_SNIPPET="${ALL_BLOCK_SNIPPET}- name: 地区白名单-全部国家(放行私网与全球所有IP)\n  action: allow\n  expr: true\n\n"
         return 0
+    else
+        # 黑名单模式下坚决不生成全量阻断规则：因为 OpenGFW 在 PREROUTING 截获数据包，
+        # 阻断全部外部源 IP 会把所有正常出站访问的回包一起阻断，导致全网断网。
+        # 如需仅允许特定国家，应使用白名单模式。
+        logger -t opengfw-geoip "警告: 黑名单模式下忽略【全部国家】选项，防止阻断正常访问回包导致全网断网"
+        return 0
     fi
-
-    case "$direction" in
-        "src")
-            # 仅拦截「外部连入」：源地址不是私网的入站流量全部阻断
-            ALL_BLOCK_SNIPPET="${ALL_BLOCK_SNIPPET}- name: 地区黑名单-全部国家(放行内网源地址)\n  action: allow\n  expr: ${src_expr}\n\n"
-            ;;
-        "both")
-            # 双向彻底切断：仅放行「源与目的都在内网」的流量，其余全部阻断
-            ALL_BLOCK_SNIPPET="${ALL_BLOCK_SNIPPET}- name: 地区黑名单-全部国家(放行内网互访)\n  action: allow\n  expr: (${src_expr}) && (${dst_expr})\n\n"
-            ;;
-        *)
-            # 仅拦截「访问外网」：目的地址不是私网的出站流量全部阻断
-            ALL_BLOCK_SNIPPET="${ALL_BLOCK_SNIPPET}- name: 地区黑名单-全部国家(放行内网目的地址)\n  action: allow\n  expr: ${dst_expr}\n\n"
-            ;;
-    esac
-
-    # 安全兜底：放行 SSH 与路由器后台管理端口，避免用户被锁在设备之外
-    # (该片段插入位置在「# 1. 核心基础设施」之前，故必须在此重复声明)
-    ALL_BLOCK_SNIPPET="${ALL_BLOCK_SNIPPET}- name: 地区黑名单-全部国家(安全兜底-放行SSH)\n  action: allow\n  expr: port.dst == 22 || port.src == 22\n\n"
-    ALL_BLOCK_SNIPPET="${ALL_BLOCK_SNIPPET}- name: 地区黑名单-全部国家(安全兜底-放行路由器后台管理)\n  action: allow\n  expr: (port.dst == 80 || port.dst == 443) && (cidr(ip.dst, \"10.0.0.0/8\") || cidr(ip.dst, \"172.16.0.0/12\") || cidr(ip.dst, \"192.168.0.0/16\"))\n\n"
-
-    ALL_BLOCK_SNIPPET="${ALL_BLOCK_SNIPPET}- name: 地区黑名单-阻断全部国家与地区(全球 ALL)\n  action: block\n  log: true\n  expr: true\n\n"
 }
 
 apply_rules() {
@@ -201,7 +185,11 @@ apply_rules() {
             c_low=$(echo "$c" | tr 'A-Z' 'a-z' | tr -d ' ,')
             [ -z "$c_low" ] && continue
             if [ "$c_low" = "$ALL_CODE" ]; then
-                has_all="1"
+                if [ "$mode" = "whitelist" ]; then
+                    has_all="1"
+                else
+                    logger -t opengfw-geoip "黑名单模式下忽略'all'，防止全网阻断"
+                fi
             else
                 norm_countries="$norm_countries $c_low"
             fi
