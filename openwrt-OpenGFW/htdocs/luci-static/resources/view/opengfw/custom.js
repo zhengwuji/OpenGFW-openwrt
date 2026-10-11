@@ -42,11 +42,38 @@ return view.extend({
 			}
 		}).catch(function() {
 			return [];
+		}).then(function(rules) {
+			// 批量查询 IP 对应国家, 供清单/面板显示国旗
+			let ips = [];
+			(rules || []).forEach(function(r) {
+				if (r.type === 'ip') {
+					let base = (r.value || '').split('/')[0];
+					if (base && ips.indexOf(base) === -1) ips.push(base);
+				}
+			});
+			ips = ips.slice(0, 200);
+			if (!ips.length) return { rules: rules || [], cc: {} };
+			return fs.exec_direct(HELPER, ['geoip-lookup', JSON.stringify(ips)]).then(function(res) {
+				let cc = {};
+				try { cc = JSON.parse(res) || {}; } catch(e) {}
+				return { rules: rules || [], cc: cc };
+			}).catch(function() {
+				return { rules: rules || [], cc: {} };
+			});
 		});
 	},
 
 	render: function(rulesList) {
-		let currentRules = Array.isArray(rulesList) ? rulesList : [];
+		let rawData = (rulesList && rulesList.rules) ? rulesList : { rules: (Array.isArray(rulesList) ? rulesList : []), cc: {} };
+		let currentRules = Array.isArray(rawData.rules) ? rawData.rules : [];
+		let ccMap = rawData.cc || {};
+
+		// 国家代码 → 旗帜 emoji
+		function ccFlag(cc) {
+			if (!cc || !/^[A-Za-z]{2}$/.test(cc)) return '';
+			let c = cc.toUpperCase();
+			return String.fromCodePoint(0x1F1E6 + c.charCodeAt(0) - 65, 0x1F1E6 + c.charCodeAt(1) - 65);
+		}
 		let activeFilterMode = 'all';
 		let searchKeyword = '';
 		let addMode = 'single'; // 'single' or 'batch'
@@ -255,6 +282,7 @@ return view.extend({
 		}, _('统计加载中...'));
 
 		let tableBody = E('tbody');
+		let filterBtnRefs = [];
 
 		function updateStats() {
 			let total = currentRules.length;
@@ -263,6 +291,11 @@ return view.extend({
 			let blocks = currentRules.filter(function(r) { return r.action === 'block' || r.action === 'drop'; }).length;
 			let allows = currentRules.filter(function(r) { return r.action === 'allow'; }).length;
 			statsBadge.textContent = _('已生效总计: %d 条 | 域名: %d | IP/网段: %d | 阻断: %d | 白名单: %d').format(total, domains, ips, blocks, allows);
+			// 筛选标签同步显示实时数量
+			let countByMode = { 'all': total, 'domain': domains, 'ip': ips, 'block': blocks, 'allow': allows };
+			filterBtnRefs.forEach(function(ref) {
+				ref.btn.textContent = ref.label + ' (' + (countByMode[ref.mode] || 0) + ')';
+			});
 		}
 
 		function renderTable() {
@@ -299,6 +332,16 @@ return view.extend({
 					E('span', { 'style': 'background: #e0f2fe; color: #0369a1; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 11px;' }, '🌐 域名') :
 					E('span', { 'style': 'background: #fef3c7; color: #b45309; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 11px;' }, '🖥️ IP网段');
 
+				// IP 条目旁显示归属国家旗帜
+				let ccBadge = null;
+				if (r.type === 'ip') {
+					let cc = ccMap[(r.value || '').split('/')[0]] || '';
+					let flag = ccFlag(cc);
+					if (flag) {
+						ccBadge = E('span', { 'style': 'margin-left: 8px; font-size: 12px; background: #f1f5f9; color: #334155; padding: 1px 7px; border-radius: 10px;' }, flag + ' ' + cc.toUpperCase());
+					}
+				}
+
 				let actionBadge = (r.action === 'allow') ?
 					E('span', { 'style': 'background: #dcfce7; color: #15803d; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 11px;' }, '⚡ 白名单放行') :
 					E('span', { 'style': 'background: #fee2e2; color: #b91c1c; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 11px;' }, '🛑 阻断拦截');
@@ -321,7 +364,8 @@ return view.extend({
 						let remain = currentRules.filter(function(item) {
 							return item.id !== r.id;
 						});
-						saveAndApply(remain, _('已移除规则并立即解除拦截: ') + r.value);
+						saveAndApply(remain, _('已移除规则并立即解除拦截: ') + r.value)
+							.then(function() { loadRecentBlocks(); });
 					}
 				}, _('🗑️ 移除'));
 
@@ -329,7 +373,7 @@ return view.extend({
 					E('td', { 'style': 'text-align: center; width: 35px;' }, [ chkBox ]),
 					E('td', { 'style': 'text-align: center; width: 50px; color: #888;' }, (idx + 1)),
 					E('td', { 'style': 'width: 90px;' }, [ typeBadge ]),
-					E('td', { 'style': 'font-family: monospace; font-weight: bold; font-size: 13px;' }, r.value),
+					E('td', { 'style': 'font-family: monospace; font-weight: bold; font-size: 13px;' }, ccBadge ? [ r.value, ccBadge ] : r.value),
 					E('td', { 'style': 'width: 120px;' }, [ actionBadge ]),
 					E('td', { 'style': 'width: 120px; font-size: 12px;' }, dirText),
 					E('td', { 'style': 'color: #555; font-size: 12px;' }, r.comment || '-'),
@@ -343,28 +387,31 @@ return view.extend({
 			renderTable();
 		});
 
-		function createTabBtn(label, mode, active) {
-			return E('button', {
-				'class': 'btn cbi-button ' + (active ? 'cbi-button-action' : 'cbi-button-neutral'),
-				'style': 'margin-right: 6px; padding: 3px 10px; font-size: 12px;',
-				'click': function() {
-					activeFilterMode = mode;
-					let p = this.parentNode;
-					for (let i = 0; i < p.children.length; i++) {
-						p.children[i].className = 'btn cbi-button cbi-button-neutral';
-					}
-					this.className = 'btn cbi-button cbi-button-action';
-					renderTable();
-				}
-			}, label);
+		// 切换筛选视图 (白名单/黑名单等), 供标签点击与加白后自动跳转共用
+		function setFilterMode(mode) {
+			activeFilterMode = mode;
+			filterBtnRefs.forEach(function(ref) {
+				ref.btn.className = 'btn cbi-button ' + (ref.mode === mode ? 'cbi-button-action' : 'cbi-button-neutral');
+			});
+			renderTable();
 		}
 
-		let filterBtnGroup = E('div', { 'style': 'display: flex; gap: 5px; align-items: center;' }, [
-			createTabBtn(_('全部'), 'all', true),
+		function createTabBtn(label, mode, active) {
+			let btn = E('button', {
+				'class': 'btn cbi-button ' + (active ? 'cbi-button-action' : 'cbi-button-neutral'),
+				'style': 'margin-right: 6px; padding: 3px 10px; font-size: 12px;',
+				'click': function() { setFilterMode(mode); }
+			}, label);
+			filterBtnRefs.push({ btn: btn, mode: mode, label: label });
+			return btn;
+		}
+
+		let filterBtnGroup = E('div', { 'style': 'display: flex; flex-wrap: wrap; gap: 5px; align-items: center;' }, [
+			createTabBtn(_('📋 全部'), 'all', true),
+			createTabBtn(_('⚡ 白名单'), 'allow', false),
+			createTabBtn(_('🛑 黑名单'), 'block', false),
 			createTabBtn(_('🌐 仅看域名'), 'domain', false),
-			createTabBtn(_('🖥️ 仅看 IP'), 'ip', false),
-			createTabBtn(_('🛑 仅看阻断'), 'block', false),
-			createTabBtn(_('⚡ 仅看白名单'), 'allow', false)
+			createTabBtn(_('🖥️ 仅看 IP'), 'ip', false)
 		]);
 
 		let selectAllChk = E('input', {
@@ -398,7 +445,8 @@ return view.extend({
 				let remain = currentRules.filter(function(r) {
 					return selectedIds.indexOf(r.id) === -1;
 				});
-				saveAndApply(remain, _('已批量移除 %d 条规则并热重载生效！').format(selectedIds.length));
+				saveAndApply(remain, _('已批量移除 %d 条规则并热重载生效！').format(selectedIds.length))
+					.then(function() { loadRecentBlocks(); });
 			}
 		}, _('🗑️ 批量移除已选'));
 
@@ -454,9 +502,92 @@ return view.extend({
 			}
 		}, _('📑 批量文本导入'));
 
+		// ===== 被拦可疑加密连接 · 一键加白面板 =====
+		let recentBody = E('tbody');
+		let recentBadge = E('span', {
+			'style': 'font-size: 12px; color: #92400e; background: #fef3c7; padding: 4px 10px; border-radius: 12px; border: 1px solid #fcd34d;'
+		}, '');
+
+		function renderRecent(items) {
+			recentBody.innerHTML = '';
+			let pending = items.filter(function(x) { return !x.allowed; });
+			recentBadge.textContent = pending.length > 0 ?
+				_('待处理: %d 个目标').format(pending.length) : _('暂无待处理 ✓');
+			if (!items.length) {
+				recentBody.appendChild(E('tr', {}, [
+					E('td', { 'colspan': '7', 'style': 'text-align: center; color: #888; padding: 14px; font-size: 13px;' },
+						_('当前日志中没有「全加密/木马检测」拦截记录，一切正常 ✓'))
+				]));
+				return;
+			}
+			items.forEach(function(it, idx) {
+				let actionCell;
+				if (it.allowed) {
+					actionCell = E('span', { 'style': 'color: #15803d; font-weight: bold; font-size: 12px;' }, _('✅ 已加白'));
+				} else {
+					actionCell = E('button', {
+						'class': 'btn cbi-button cbi-button-apply',
+						'style': 'padding: 2px 12px; font-size: 12px; font-weight: bold;',
+						'click': function() { whitelistRecent(it); }
+					}, _('⚡ 一键加白'));
+				}
+				recentBody.appendChild(E('tr', { 'style': 'border-bottom: 1px solid #f1f5f9;' }, [
+					E('td', { 'style': 'text-align: center; color: #999; font-size: 12px;' }, String(idx + 1)),
+					E('td', { 'style': 'font-family: monospace; font-size: 13px; font-weight: bold;' },
+						it.country && ccFlag(it.country) ?
+							[ it.ip, E('span', { 'style': 'margin-left: 8px; font-size: 12px; font-weight: normal; background: #f1f5f9; color: #334155; padding: 1px 7px; border-radius: 10px;' }, ccFlag(it.country) + ' ' + it.country.toUpperCase()) ] :
+							it.ip),
+					E('td', { 'style': 'text-align: center; font-family: monospace; font-size: 12px;' }, (it.ports || []).join(', ') || '-'),
+					E('td', { 'style': 'text-align: center; font-size: 11px; color: #b45309;' }, (it.rules || []).join(', ')),
+					E('td', { 'style': 'text-align: center; font-weight: bold; color: #dc2626;' }, String(it.count || 0)),
+					E('td', { 'style': 'text-align: center; font-size: 12px; color: #666;' }, it.last || '-'),
+					E('td', { 'style': 'text-align: center;' }, [ actionCell ])
+				]));
+			});
+		}
+
+		function loadRecentBlocks() {
+			recentBody.innerHTML = '';
+			recentBody.appendChild(E('tr', {}, [
+				E('td', { 'colspan': '7', 'style': 'text-align: center; color: #888; padding: 14px;' }, _('加载中...'))
+			]));
+			fs.exec_direct(HELPER, ['recent-blocks']).then(function(res) {
+				let items = [];
+				try { items = JSON.parse(res).items || []; } catch(e) {}
+				renderRecent(items);
+			}).catch(function() { renderRecent([]); });
+		}
+
+		function whitelistRecent(it) {
+			let exists = currentRules.some(function(r) {
+				return r.type === 'ip' && (r.value || '').split('/')[0] === it.ip;
+			});
+			if (exists) {
+				ui.addNotification(null, E('p', {}, _('%s 已存在于清单中，请刷新页面查看。').format(it.ip)), 'warning');
+				return;
+			}
+			let item = {
+				id: 'w_' + Date.now(),
+				type: 'ip',
+				value: it.ip,
+				action: 'allow',
+				direction: 'both',
+				comment: _('被拦记录加白 (') + (it.rules || []).join('/') + ')',
+				enabled: true,
+				time: getNowStr()
+			};
+			saveAndApply([item].concat(currentRules), _('已将 %s 加入白名单并热重载生效！').format(it.ip))
+				.then(function() {
+					loadRecentBlocks();
+					// 自动跳到白名单视图, 让用户立刻看到刚加白的条目 (可配合搜索框查找)
+					setFilterMode('allow');
+				});
+		}
+
 		// 页面初始化渲染
 		renderTable();
 		updateStats();
+		loadRecentBlocks();
 
 		return E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, _('OpenGFW 自定义域名与 IP 拦截')),
@@ -470,6 +601,37 @@ return view.extend({
 				]),
 				singleFormContainer,
 				batchFormContainer
+			]),
+
+			// 被拦可疑连接 · 一键加白卡片
+			E('div', { 'class': 'cbi-section', 'style': 'background: #fffbeb; border: 1px solid #fcd34d; border-radius: 8px; padding: 16px; margin-bottom: 20px;' }, [
+				E('div', { 'style': 'display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; border-bottom: 1px solid #fde68a; padding-bottom: 10px; margin-bottom: 10px;' }, [
+					E('div', { 'style': 'display: flex; align-items: center; gap: 10px;' }, [
+						E('div', { 'style': 'font-weight: bold; font-size: 14px; color: #92400e;' }, _('🛡️ 被拦截的可疑加密连接 · 一键加白')),
+						recentBadge
+					]),
+					E('button', {
+						'class': 'btn cbi-button cbi-button-neutral',
+						'style': 'padding: 4px 14px; font-size: 12px;',
+						'click': loadRecentBlocks
+					}, _('🔄 刷新拦截记录'))
+				]),
+				E('div', { 'style': 'font-size: 12px; color: #78716c; margin-bottom: 10px;' },
+					_('此列表实时汇总被 OpenGFW「木马/全加密检测」拦截的目标（例如你自己的代理软件服务器被误拦时，无需再手动查找 IP）。确认是自己的软件后点击【⚡一键加白】即刻放行；加白条目会出现在下方清单中，可随时移除。数据来自 /var/log/opengfw.log 拦截日志。')),
+				E('table', { 'class': 'table cbi-section-table', 'style': 'width: 100%; border-collapse: collapse; background: #fff;' }, [
+					E('thead', {}, [
+						E('tr', { 'class': 'cbi-section-table-titles' }, [
+							E('th', { 'class': 'cbi-section-table-cell', 'style': 'text-align: center; width: 45px;' }, _('序号')),
+							E('th', { 'class': 'cbi-section-table-cell' }, _('目标 IP')),
+							E('th', { 'class': 'cbi-section-table-cell', 'style': 'text-align: center; width: 110px;' }, _('端口')),
+							E('th', { 'class': 'cbi-section-table-cell', 'style': 'text-align: center; width: 170px;' }, _('命中规则')),
+							E('th', { 'class': 'cbi-section-table-cell', 'style': 'text-align: center; width: 60px;' }, _('次数')),
+							E('th', { 'class': 'cbi-section-table-cell', 'style': 'text-align: center; width: 150px;' }, _('最近拦截时间')),
+							E('th', { 'class': 'cbi-section-table-cell', 'style': 'text-align: center; width: 110px;' }, _('操作'))
+						])
+					]),
+					recentBody
+				])
 			]),
 
 			// 清单与搜索卡片
@@ -505,7 +667,7 @@ return view.extend({
 				]),
 
 				E('div', { 'style': 'margin-top: 15px; color: #888; font-size: 12px; display: flex; justify-content: space-between;' }, [
-					E('span', {}, _('💡 提示: 添加的域名会自动覆盖根域及其全部子域名；规则置于引擎最优先判定链路，点击移除即刻解除拦截。')),
+					E('span', {}, _('💡 提示: 点击上方「⚡白名单 / 🛑黑名单」标签可分视图查看并配合搜索框快速定位；添加的域名会自动覆盖根域及其全部子域名；点击移除即刻解除拦截。')),
 					E('span', {}, _('支持快捷搜索过滤，数据实时同步保存在 /etc/opengfw/custom_rules.json'))
 				])
 			])

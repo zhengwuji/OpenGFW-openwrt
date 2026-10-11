@@ -131,9 +131,122 @@ with open(rules_file, 'w', encoding='utf-8') as f:
     echo "{\"status\": \"ok\", \"message\": \"自定义规则已成功编译并热重载生效！\"}"
 }
 
+# 聚合拦截日志中「木马/全加密检测」命中的目标, 供 LuCI「一键加白」面板使用
+recent_blocks() {
+    python3 - <<'PY'
+import json, re, ipaddress, sys
+sys.path.insert(0, '/etc/opengfw')
+try:
+    from geoip_lookup import lookup as _geo
+except Exception:
+    _geo = lambda ip: ''
+
+LOG = '/var/log/opengfw.log'
+CUSTOM = '/etc/opengfw/custom_rules.json'
+
+entries = {}
+try:
+    pat = re.compile(r'^(\S+).*"name": "([^"]+)", .*"dst": "([^"]+)"')
+    with open(LOG, 'r', encoding='utf-8', errors='ignore') as f:
+        for line in f:
+            if '"name": "block fully-encrypted"' not in line and '"name": "block trojan"' not in line:
+                continue
+            m = pat.match(line)
+            if not m:
+                continue
+            ts = m.group(1).replace('T', ' ')[:19]
+            rule, dst = m.group(2), m.group(3)
+            if dst.startswith('['):
+                idx = dst.find(']')
+                ip = dst[1:idx]
+                port = dst[idx + 2:].lstrip(':')
+            else:
+                parts = dst.rsplit(':', 1)
+                ip, port = parts[0], (parts[1] if len(parts) == 2 else '')
+            try:
+                ipo = ipaddress.ip_address(ip)
+                if ipo.is_private or ipo.is_loopback or ipo.is_multicast or ipo.is_reserved or ipo.is_unspecified:
+                    continue
+            except ValueError:
+                continue
+            e = entries.setdefault(ip, {'ip': ip, 'ports': set(), 'rules': set(), 'count': 0, 'last': ''})
+            if port.isdigit():
+                e['ports'].add(port)
+            e['rules'].add(rule)
+            e['count'] += 1
+            if ts > e['last']:
+                e['last'] = ts
+except FileNotFoundError:
+    pass
+
+allow_nets = []
+try:
+    with open(CUSTOM, 'r', encoding='utf-8') as f:
+        for r in json.load(f):
+            if r.get('action') == 'allow' and r.get('type') == 'ip':
+                try:
+                    allow_nets.append(ipaddress.ip_network(str(r.get('value', '')).strip(), strict=False))
+                except ValueError:
+                    pass
+except Exception:
+    pass
+
+items = []
+for e in entries.values():
+    e['allowed'] = any(ipaddress.ip_address(e['ip']) in n for n in allow_nets)
+    e['ports'] = sorted(e['ports'])[:6]
+    e['rules'] = sorted(e['rules'])
+    e['country'] = _geo(e['ip'])
+    items.append(e)
+
+items.sort(key=lambda x: (x['allowed'], -x['count'], x['ip']))
+print(json.dumps({'status': 'ok', 'items': items[:100]}, ensure_ascii=False))
+PY
+}
+
+# 命令行快捷加白: allow <IP或CIDR> [备注]
+allow_ip() {
+    local ip="$1"
+    [ -z "$ip" ] && { echo '{"status":"error","message":"用法: allow <IP或CIDR> [备注]"}'; return 1; }
+    case "$ip" in
+        *[!0-9a-fA-F.:/]*)
+            echo '{"status":"error","message":"IP 格式无效"}'
+            return 1
+            ;;
+    esac
+    local comment
+    comment=$(printf '%s' "$2" | tr -d "'\"")
+    python3 -c "
+import json, time
+ip = '${ip}'.strip()
+comment = '''${comment}'''.strip() or '手动加白'
+try:
+    with open('${CUSTOM_JSON}', 'r', encoding='utf-8') as f:
+        rules = json.load(f)
+except Exception:
+    rules = []
+for r in rules:
+    if r.get('type') == 'ip' and r.get('action') == 'allow' and str(r.get('value', '')).split('/')[0] == ip.split('/')[0]:
+        print(json.dumps({'status': 'ok', 'message': '已存在于白名单, 无需重复添加', 'ip': ip}, ensure_ascii=False))
+        raise SystemExit(0)
+rules.insert(0, {'id': 'w_%d' % (time.time() * 1000), 'type': 'ip', 'value': ip, 'action': 'allow',
+                 'direction': 'both', 'comment': comment, 'enabled': True,
+                 'time': time.strftime('%Y-%m-%d %H:%M:%S')})
+with open('${CUSTOM_JSON}', 'w', encoding='utf-8') as f:
+    json.dump(rules, f, ensure_ascii=False, indent=2)
+"
+    apply_rules
+}
+
 case "$1" in
     get)
         get_json
+        ;;
+    apply)
+        apply_rules
+        ;;
+    recent-blocks)
+        recent_blocks
         ;;
     apply)
         apply_rules
@@ -151,8 +264,14 @@ case "$1" in
         echo "[]" > "$CUSTOM_JSON"
         apply_rules
         ;;
+    allow)
+        allow_ip "$2" "$3"
+        ;;
+    geoip-lookup)
+        python3 /etc/opengfw/geoip_lookup.py "$2" 2>/dev/null || echo '{}'
+        ;;
     *)
-        echo "Usage: $0 {get|apply|set|clear}"
+        echo "Usage: $0 {get|apply|set|clear|recent-blocks|allow <IP> [备注]|geoip-lookup <JSON数组>}"
         exit 1
         ;;
 esac
