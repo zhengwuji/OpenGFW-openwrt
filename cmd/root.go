@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/apernet/OpenGFW/analyzer"
 	"github.com/apernet/OpenGFW/analyzer/tcp"
@@ -181,6 +182,7 @@ type cliConfigWorkers struct {
 	TCPMaxBufferedPagesTotal   int `mapstructure:"tcpMaxBufferedPagesTotal"`
 	TCPMaxBufferedPagesPerConn int `mapstructure:"tcpMaxBufferedPagesPerConn"`
 	UDPMaxStreams              int `mapstructure:"udpMaxStreams"`
+	TCPStreamTimeout           int `mapstructure:"tcpStreamTimeout"` // Seconds; 0 = default (600), negative = disable idle stream cleanup
 }
 
 type cliConfigRuleset struct {
@@ -214,6 +216,7 @@ func (c *cliConfig) fillWorkers(config *engine.Config) error {
 	config.WorkerTCPMaxBufferedPagesTotal = c.Workers.TCPMaxBufferedPagesTotal
 	config.WorkerTCPMaxBufferedPagesPerConn = c.Workers.TCPMaxBufferedPagesPerConn
 	config.WorkerUDPMaxStreams = c.Workers.UDPMaxStreams
+	config.WorkerTCPStreamTimeout = time.Duration(c.Workers.TCPStreamTimeout) * time.Second
 	return nil
 }
 

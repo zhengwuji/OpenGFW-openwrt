@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"time"
 
 	"github.com/apernet/OpenGFW/io"
 	"github.com/apernet/OpenGFW/ruleset"
@@ -26,6 +27,7 @@ type Config struct {
 	WorkerTCPMaxBufferedPagesTotal   int
 	WorkerTCPMaxBufferedPagesPerConn int
 	WorkerUDPMaxStreams              int
+	WorkerTCPStreamTimeout           time.Duration // Close & remove TCP streams idle for longer than this. Zero means default (10 minutes), negative disables the cleanup.
 }
 
 // Logger is the combined logging interface for the engine, workers and analyzers.

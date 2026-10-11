@@ -11,6 +11,9 @@ config opengfw 'global'
 	option tcp_max_pages_total '4096'
 	option tcp_max_pages_per_conn '64'
 	option udp_max_streams '4096'
+	# TCP 流空闲回收(秒):超过该时长没有任何流量的 TCP 连接会被引擎释放,
+	# 防止连接池无限增长吃光内存。0 = 默认 600;负数 = 关闭回收(不推荐)。
+	option tcp_stream_timeout '600'
 	option geoip_path '/etc/opengfw/geoip.dat'
 	option geosite_path '/etc/opengfw/geosite.dat'
 	option rules_path '/etc/opengfw/rules.yaml'

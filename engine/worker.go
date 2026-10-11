@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"time"
 
 	"github.com/apernet/OpenGFW/io"
 	"github.com/apernet/OpenGFW/ruleset"
@@ -17,6 +18,8 @@ const (
 	defaultTCPMaxBufferedPagesTotal         = 4096
 	defaultTCPMaxBufferedPagesPerConnection = 64
 	defaultUDPMaxStreams                    = 4096
+	defaultTCPFlushInterval                 = time.Minute
+	defaultTCPStreamTimeout                 = 10 * time.Minute
 )
 
 type workerPacket struct {
@@ -38,6 +41,8 @@ type worker struct {
 	udpStreamManager *udpStreamManager
 
 	modSerializeBuffer gopacket.SerializeBuffer
+
+	tcpStreamTimeout time.Duration
 }
 
 type workerConfig struct {
@@ -48,6 +53,7 @@ type workerConfig struct {
 	TCPMaxBufferedPagesTotal   int
 	TCPMaxBufferedPagesPerConn int
 	UDPMaxStreams              int
+	TCPStreamTimeout           time.Duration
 }
 
 func (c *workerConfig) fillDefaults() {
@@ -62,6 +68,9 @@ func (c *workerConfig) fillDefaults() {
 	}
 	if c.UDPMaxStreams <= 0 {
 		c.UDPMaxStreams = defaultUDPMaxStreams
+	}
+	if c.TCPStreamTimeout == 0 {
+		c.TCPStreamTimeout = defaultTCPStreamTimeout
 	}
 }
 
@@ -101,6 +110,7 @@ func newWorker(config workerConfig) (*worker, error) {
 		udpStreamFactory:   udpSF,
 		udpStreamManager:   udpSM,
 		modSerializeBuffer: gopacket.NewSerializeBuffer(),
+		tcpStreamTimeout:   config.TCPStreamTimeout,
 	}, nil
 }
 
@@ -111,6 +121,18 @@ func (w *worker) Feed(p *workerPacket) {
 func (w *worker) Run(ctx context.Context) {
 	w.logger.WorkerStart(w.id)
 	defer w.logger.WorkerStop(w.id)
+	var flushC <-chan time.Time
+	if w.tcpStreamTimeout > 0 {
+		// Periodically flush & remove TCP streams that haven't seen any
+		// packets for tcpStreamTimeout. Without this, the stream pool grows
+		// without bound: connections that never terminate cleanly (blocked,
+		// half-open, idle mobile devices) keep their stream & analyzer state
+		// in memory forever. Runs inside the worker goroutine, so no
+		// additional locking is needed.
+		ticker := time.NewTicker(defaultTCPFlushInterval)
+		defer ticker.Stop()
+		flushC = ticker.C
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -122,6 +144,8 @@ func (w *worker) Run(ctx context.Context) {
 			}
 			v, b := w.handle(wPkt.StreamID, wPkt.Packet)
 			_ = wPkt.SetVerdict(v, b)
+		case <-flushC:
+			w.tcpAssembler.FlushCloseOlderThan(time.Now().Add(-w.tcpStreamTimeout))
 		}
 	}
 }

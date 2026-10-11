@@ -10,7 +10,7 @@ LOG_FILE=/var/log/opengfw.log
 
 generate_config() {
 	local mode workers queue_size rcv_buf snd_buf rst
-	local tcp_pages tcp_conn udp_streams geoip geosite
+	local tcp_pages tcp_conn udp_streams tcp_stream_timeout geoip geosite
 	local is_local="false"
 
 	config_load opengfw
@@ -23,6 +23,7 @@ generate_config() {
 	config_get tcp_pages global tcp_max_pages_total "4096"
 	config_get tcp_conn global tcp_max_pages_per_conn "64"
 	config_get udp_streams global udp_max_streams "4096"
+	config_get tcp_stream_timeout global tcp_stream_timeout "600"
 	config_get geoip global geoip_path "/etc/opengfw/geoip.dat"
 	config_get geosite global geosite_path "/etc/opengfw/geosite.dat"
 
@@ -44,6 +45,7 @@ workers:
   tcpMaxBufferedPagesTotal: ${tcp_pages:-4096}
   tcpMaxBufferedPagesPerConn: ${tcp_conn:-64}
   udpMaxStreams: ${udp_streams:-4096}
+  tcpStreamTimeout: ${tcp_stream_timeout:-600}
 
 ruleset:
   geoip: ${geoip}

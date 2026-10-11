@@ -36,6 +36,7 @@ func NewEngine(config Config) (Engine, error) {
 			TCPMaxBufferedPagesTotal:   config.WorkerTCPMaxBufferedPagesTotal,
 			TCPMaxBufferedPagesPerConn: config.WorkerTCPMaxBufferedPagesPerConn,
 			UDPMaxStreams:              config.WorkerUDPMaxStreams,
+			TCPStreamTimeout:           config.WorkerTCPStreamTimeout,
 		})
 		if err != nil {
 			return nil, err
