@@ -1,0 +1,69 @@
+#!/bin/sh
+# OpenGFW 恢复出厂设置助手(基本设置页)
+# 把 /etc/opengfw/rules.yaml 完整恢复到 2026-10-12 功能改动前的原始文件
+# (原始 13 条规则:白名单放行、SSH/后台放行、DoT/DoH 拦截、广告拦截、TLS 审计)。
+# 安全机制:恢复前自动备份当前 rules.yaml(保留最近 5 份);恢复后校验编译日志,
+# 失败自动回滚;不影响 config.yaml(运行模式)、网页面板、网络等其他系统配置。
+
+CONF_DIR="/etc/opengfw"
+RULES_FILE="${CONF_DIR}/rules.yaml"
+LOG_FILE="/var/log/opengfw.log"
+HELPER_TAG="factory"
+
+reload_and_verify() {
+	local before after
+	before=$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)
+	kill -HUP $(pidof opengfw | awk '{print $1}') 2>/dev/null
+	sleep 2
+	after=$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)
+	if [ "$after" -gt "$before" ] && tail -n +"$((before + 1))" "$LOG_FILE" 2>/dev/null | grep -q "failed to compile"; then
+		return 1
+	fi
+	return 0
+}
+
+do_get() {
+	local baseline=""
+	[ -f "${CONF_DIR}/rules.yaml.bak-20261012" ] && baseline="rules.yaml.bak-20261012"
+	[ -z "$baseline" ] && [ -f "${CONF_DIR}/rules.yaml.example" ] && baseline="rules.yaml.example"
+	local rules_size="-"
+	[ -f "$RULES_FILE" ] && rules_size=$(wc -c < "$RULES_FILE")
+	echo "{\"available\": $([ -n "$baseline" ] && echo true || echo false), \"baseline\": \"${baseline}\", \"rules_size\": ${rules_size:-0}}"
+}
+
+do_apply() {
+	local baseline=""
+	[ -f "${CONF_DIR}/rules.yaml.bak-20261012" ] && baseline="${CONF_DIR}/rules.yaml.bak-20261012"
+	[ -z "$baseline" ] && [ -f "${CONF_DIR}/rules.yaml.example" ] && baseline="${CONF_DIR}/rules.yaml.example"
+	[ -z "$baseline" ] && {
+		echo '{"status":"error","message":"未找到出厂原始文件(rules.yaml.bak-20261012),无法恢复"}'
+		return 0
+	}
+
+	# 恢复前备份当前规则(保留最近 5 份)
+	if [ -f "$RULES_FILE" ]; then
+		cp "$RULES_FILE" "${CONF_DIR}/rules.yaml.bak-${HELPER_TAG}-$(date +%Y%m%d%H%M%S)"
+		ls -1t "${CONF_DIR}"/rules.yaml.bak-${HELPER_TAG}-* 2>/dev/null | tail -n +6 | xargs -r rm -f
+	fi
+	local newest
+	newest=$(ls -1t "${CONF_DIR}"/rules.yaml.bak-${HELPER_TAG}-* 2>/dev/null | head -1)
+
+	cp "$baseline" "$RULES_FILE"
+	if reload_and_verify; then
+		logger -t opengfw-factory "已恢复出厂设置: $(basename "$baseline")"
+		echo "{\"status\":\"ok\",\"restored\":\"$(basename "$baseline")\",\"backup\":\"$(basename "$newest" 2>/dev/null)\"}"
+	else
+		[ -f "$newest" ] && cp "$newest" "$RULES_FILE"
+		kill -HUP $(pidof opengfw | awk '{print $1}') 2>/dev/null
+		echo '{"status":"error","message":"恢复后规则编译失败,已自动回滚到恢复前的状态,网络不受影响"}'
+	fi
+}
+
+case "$1" in
+	get) do_get ;;
+	apply) do_apply ;;
+	*)
+		echo "Usage: $0 {get|apply}"
+		exit 1
+		;;
+esac

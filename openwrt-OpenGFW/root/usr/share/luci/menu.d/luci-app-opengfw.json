@@ -18,13 +18,13 @@
 		}
 	},
 	"admin/services/opengfw/rules": {
-		"title": "规则管理",
-		"order": 20,
-		"action": {
-			"type": "view",
-			"path": "opengfw/rules"
-		}
-	},
+			"title": "规则管理",
+			"order": 20,
+			"action": {
+				"type": "view",
+				"path": "opengfw/rules"
+			}
+		},
 	"admin/services/opengfw/geoip": {
 		"title": "地区 IP 拦截",
 		"order": 22,

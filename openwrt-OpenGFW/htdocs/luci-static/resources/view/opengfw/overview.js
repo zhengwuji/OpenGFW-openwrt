@@ -412,7 +412,62 @@ return view.extend({
 				}).catch(function() {});
 			}, 3);
 
-			return statusCard;
+			return E('div', {}, [ statusCard,
+
+				// ⚠️ 恢复出厂设置(整个规则文件)
+				E('div', { 'class': 'cbi-section', 'style': 'margin-top: 20px; border: 1px solid #fed7aa; background: #fff7ed; border-radius: 8px; padding: 16px;' }, [
+					E('h3', { 'style': 'margin: 0 0 10px 0; font-size: 14px; font-weight: bold; color: #9a3412;' }, _('⚠️ 恢复出厂设置(整个规则文件)')),
+					E('div', { 'style': 'font-size: 13px; line-height: 1.9; color: #7c2d12; margin-bottom: 12px;' }, [
+						E('div', {}, [ E('strong', {}, _('恢复范围:')), _('把规则文件 rules.yaml 完整恢复到 2026-10-12 功能改动前的原始状态(原始 13 条规则)。') ]),
+						E('div', {}, [ E('strong', {}, _('将被移除:')), _('此后新增的全部规则 —— 木马外联拦截(FET / Trojan)、自定义拦截清单中的放行条目等。') ]),
+						E('div', {}, [ E('strong', {}, _('恢复原样:')), _('用户白名单、SSH/后台管理放行、DoT/DoH 拦截、广告拦截、TLS 审计等原始功能。') ]),
+						E('div', {}, [ E('strong', {}, _('不会触碰:')), _('OpenGFW 基本参数(工作模式等)、网页面板账号密码、路由器网络 / WiFi / DHCP 等其他系统设置。') ]),
+						E('div', {}, [ E('strong', {}, _('安全机制:')), _('恢复前自动备份当前规则(保留 5 份,可随时恢复回来);恢复后立即校验,编译失败自动回滚,不会断网。') ])
+					]),
+					E('div', { 'style': 'display: flex; gap: 10px; align-items: center; flex-wrap: wrap;' }, [
+						E('button', {
+							'class': 'btn cbi-button cbi-button-reset',
+							'style': 'padding: 6px 18px; font-weight: bold;',
+							'click': ui.createHandlerFn(this, function() {
+								if (!confirm(_('⚠️ 确定恢复出厂设置吗?\n\n将把整个规则文件 rules.yaml 恢复为 2026-10-12 改动前的原始状态:\n\n· 木马拦截(FET/Trojan)、自定义拦截放行清单等新增规则全部移除\n· 白名单、广告拦截、DoT/DoH 拦截等原始功能恢复原样\n· 不触碰基本参数、面板密码和其他系统设置\n· 恢复前自动备份当前规则,失败自动回滚,不会断网\n\n确定继续吗?'))) return;
+								ui.showModal(_('正在恢复出厂设置'), [
+									E('p', { 'class': 'spinning' }, _('正在恢复原始规则文件并热重载,请稍候...'))
+								]);
+								return fs.exec('/usr/bin/opengfw-factory-reset', ['apply']).then(function(res) {
+									ui.hideModal();
+									let out = (res && res.stdout) ? res.stdout.trim() : '';
+									let r = safeJsonParse(out);
+									if (r.status === 'ok') {
+										ui.showModal(_('✅ 恢复出厂设置成功'), [
+											E('p', { 'style': 'color: #28a745; font-weight: bold;' }, _('已恢复到原始规则文件(') + r.restored + _('),已热重载生效。')),
+											E('p', { 'style': 'color: #666; font-size: 12px;' }, _('恢复前的规则已另存为备份: ') + (r.backup || '-') + _('。如需找回,可通过 SSH 将 /etc/opengfw/ 下的该备份文件复制回 /etc/opengfw/rules.yaml,再执行 killall -HUP opengfw 即可。')),
+											E('div', { 'class': 'right', 'style': 'margin-top: 15px; text-align: right;' }, [
+												E('button', { 'class': 'btn cbi-button cbi-button-primary', 'click': ui.hideModal }, _('关闭'))
+											])
+										]);
+									} else {
+										ui.showModal(_('恢复失败'), [
+											E('p', { 'style': 'color: #dc3545; font-weight: bold;' }, r.message || out || _('未知错误')),
+											E('div', { 'class': 'right', 'style': 'margin-top: 15px; text-align: right;' }, [
+												E('button', { 'class': 'btn cbi-button cbi-button-neutral', 'click': ui.hideModal }, _('关闭'))
+											])
+										]);
+									}
+								}).catch(function(err) {
+									ui.hideModal();
+									ui.showModal(_('恢复失败'), [
+										E('p', { 'style': 'color: #dc3545;' }, _('执行出错: ') + err),
+										E('div', { 'class': 'right', 'style': 'margin-top: 15px; text-align: right;' }, [
+											E('button', { 'class': 'btn cbi-button cbi-button-neutral', 'click': ui.hideModal }, _('关闭'))
+										])
+									]);
+								});
+							})
+						}, _('🏭 恢复出厂设置')),
+						E('span', { 'style': 'font-size: 12px; color: #9a3412;' }, _('说明:本按钮恢复整个规则文件到出厂原始状态;「自定义拦截」页的「清空全部」只清空自定义规则,其余全部保留。'))
+					])
+				])
+			]);
 		};
 
 		// 核心配置区域
