@@ -29,6 +29,26 @@
   action: allow
   expr: dns != nil && dns.name != nil && geosite(dns.name, "whitelist")
 
+# ------------------------------------------------------------------------------
+# 0.1 核心 Google / FCM 推送与常用云服务直通（杜绝推送中断、GMS断连与邮箱同步误杀）
+# ------------------------------------------------------------------------------
+- name: allow google services tls
+  action: allow
+  expr: tls != nil && tls.sni != nil && (geosite(tls.sni, "google") || tls.sni contains "gvt2.com" || tls.sni contains "gvt1.com" || tls.sni contains "gvt3.com" || tls.sni contains "googleapis.com" || tls.sni contains "google.com" || tls.sni contains "gmail.com" || tls.sni contains "gstatic.com" || tls.sni contains "android.com")
+
+- name: allow google services http
+  action: allow
+  expr: http != nil && http.host != nil && (geosite(http.host, "google") || http.host contains "gvt2.com" || http.host contains "gvt1.com" || http.host contains "gvt3.com" || http.host contains "googleapis.com" || http.host contains "google.com" || http.host contains "gmail.com" || http.host contains "gstatic.com" || http.host contains "android.com")
+
+- name: allow google services quic
+  action: allow
+  expr: quic != nil && quic.sni != nil && (geosite(quic.sni, "google") || quic.sni contains "gvt2.com" || quic.sni contains "gvt1.com" || quic.sni contains "gvt3.com" || quic.sni contains "googleapis.com" || quic.sni contains "google.com" || quic.sni contains "gmail.com" || quic.sni contains "gstatic.com" || quic.sni contains "android.com")
+
+- name: allow google services dns
+  action: allow
+  expr: dns != nil && dns.name != nil && (geosite(dns.name, "google") || dns.name contains "gvt2.com" || dns.name contains "gvt1.com" || dns.name contains "gvt3.com" || dns.name contains "googleapis.com" || dns.name contains "google.com" || dns.name contains "gmail.com" || dns.name contains "gstatic.com" || dns.name contains "android.com")
+
+
 
 # ------------------------------------------------------------------------------
 
