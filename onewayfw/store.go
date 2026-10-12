@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -52,11 +53,28 @@ type AppliedState struct {
 	LastError      string `json:"lastError"` // 上一次还原失败的原因（PartialRestore 为 true 时有效）
 }
 
+type Config struct {
+	MinimizeToTray bool   `json:"minimizeToTray"`
+	AutoStart      bool   `json:"autoStart"`
+	NotifyOnDrop   bool   `json:"notifyOnDrop"`
+	CustomSubnets  string `json:"customSubnets"` // 自定义局域网扩展网段，如 "192.0.2.0/24,198.51.100.0/24"
+}
+
+func defaultConfig() Config {
+	return Config{
+		MinimizeToTray: true,
+		AutoStart:      false,
+		NotifyOnDrop:   true,
+		CustomSubnets:  "",
+	}
+}
+
 type Store struct {
 	mu  sync.Mutex
 	dir string
 	wl  []WhitelistEntry
 	st  AppliedState
+	cfg Config
 }
 
 func storeDir() string {
@@ -68,7 +86,7 @@ func storeDir() string {
 }
 
 func NewStore() (*Store, error) {
-	s := &Store{dir: storeDir()}
+	s := &Store{dir: storeDir(), cfg: defaultConfig()}
 	if err := os.MkdirAll(s.dir, 0755); err != nil {
 		return nil, err
 	}
@@ -83,6 +101,11 @@ func NewStore() (*Store, error) {
 		// 旧格式/损坏的状态文件直接忽略（防护视为未开启，避免无法启动）
 		s.st = AppliedState{}
 	}
+	if err := loadJSON(filepath.Join(s.dir, "config.json"), &s.cfg); err != nil && !os.IsNotExist(err) {
+		s.cfg = defaultConfig()
+	}
+	// 同步实际计划任务状态
+	s.cfg.AutoStart = CheckAutoStart()
 	return s, nil
 }
 
@@ -103,7 +126,62 @@ func saveJSON(path string, v interface{}) error {
 	if err := os.WriteFile(tmp, data, 0644); err != nil {
 		return err
 	}
+	// 备份原文件
+	bak := path + ".bak"
+	if _, err := os.Stat(path); err == nil {
+		if old, err := os.ReadFile(path); err == nil {
+			_ = os.WriteFile(bak, old, 0644)
+		}
+	}
 	return os.Rename(tmp, path)
+}
+
+// ---------------------------------------------------------------------------
+// 配置
+// ---------------------------------------------------------------------------
+
+func (s *Store) Config() Config {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg
+}
+
+func (s *Store) SaveConfig(cfg Config) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg = cfg
+	return saveJSON(filepath.Join(s.dir, "config.json"), s.cfg)
+}
+
+// ---------------------------------------------------------------------------
+// 开机自启动计划任务（免 UAC 提示）
+// ---------------------------------------------------------------------------
+
+const autoStartTaskName = "OneWayFW"
+
+func CheckAutoStart() bool {
+	cmd := exec.Command("schtasks", "/query", "/tn", autoStartTaskName)
+	return cmd.Run() == nil
+}
+
+func SetAutoStart(enable bool) error {
+	if enable {
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		tr := fmt.Sprintf(`"%s" -minimized`, exe)
+		cmd := exec.Command("schtasks", "/create", "/tn", autoStartTaskName, "/tr", tr, "/sc", "onlogon", "/rl", "highest", "/f")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("创建开机启动任务失败: %s (%w)", strings.TrimSpace(string(out)), err)
+		}
+		return nil
+	} else {
+		cmd := exec.Command("schtasks", "/delete", "/tn", autoStartTaskName, "/f")
+		_ = cmd.Run()
+		return nil
+	}
 }
 
 // ---------------------------------------------------------------------------

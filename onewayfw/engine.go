@@ -312,8 +312,13 @@ func (e *Engine) syncWhitelistRules() error {
 }
 
 func (e *Engine) addLanRules() error {
+	// 放行局域网子网及组播/广播发现协议（SSDP 1900、WS-Discovery 3702、mDNS 5353、LLMNR 5355）
+	remoteScope := "LocalSubnet,239.255.255.250,224.0.0.251,224.0.0.252"
+	if custom := strings.TrimSpace(e.store.Config().CustomSubnets); custom != "" {
+		remoteScope += "," + custom
+	}
 	for _, proto := range []int32{protoTCP, protoUDP} {
-		if err := AddManagedAllowRule(lanRuleName(proto), "", proto, true); err != nil {
+		if err := AddManagedAllowRuleScope(lanRuleName(proto), "", proto, remoteScope); err != nil {
 			return fmt.Errorf("添加局域网放行规则失败: %w", err)
 		}
 	}
@@ -591,4 +596,23 @@ func (e *Engine) restoreDisabledInstances(records []DisabledRuleRecord) {
 		}
 		return nil
 	})
+}
+
+// EmergencyResetDirect 在无 GUI 环境下一键安全还原防火墙（供命令行 -restore 参数使用）
+func EmergencyResetDirect(store *Store) error {
+	log.Printf("正在执行紧急还原防火墙...")
+	eng := NewEngine(store, false)
+	st := store.State()
+	if st.Applied {
+		if err := eng.Stop(); err != nil {
+			return err
+		}
+	} else {
+		// 即使 state 认为未开启，也强制清理所有托管规则并确保无残留
+		if n, err := removeManagedRules(); err == nil && n > 0 {
+			log.Printf("清理了 %d 条残留托管规则", n)
+		}
+	}
+	log.Printf("防火墙已成功紧急还原")
+	return nil
 }

@@ -37,12 +37,30 @@ func main() {
 	var (
 		noElevate = flag.Bool("no-elevate", false, "不尝试 UAC 提权（管理员能力缺失时功能受限）")
 		dryRun    = flag.Bool("dry-run", false, "演练模式：只读与模拟，不改动防火墙")
+		restore   = flag.Bool("restore", false, "紧急还原：一键恢复 Windows 防火墙原状并清理托管规则")
+		minimized = flag.Bool("minimized", false, "启动后静默最小化到系统托盘（开机自启动使用）")
 	)
 	flag.Parse()
 
 	// 无控制台窗口（-H windowsgui 构建），日志写入 %ProgramData%\OneWayFW\onewayfw.log
 	initLogging()
 	defer closeLogging()
+
+	// 紧急还原模式直接执行，无需单实例检测或 GUI 界面
+	if *restore {
+		startCOMWorker()
+		store, err := NewStore()
+		if err != nil {
+			walk.MsgBox(nil, appTitle, "读取数据目录失败: "+err.Error(), walk.MsgBoxOK|walk.MsgBoxIconError)
+			return
+		}
+		if err := EmergencyResetDirect(store); err != nil {
+			walk.MsgBox(nil, appTitle, "紧急还原失败:\n"+err.Error(), walk.MsgBoxOK|walk.MsgBoxIconError)
+			return
+		}
+		walk.MsgBox(nil, appTitle, "✅ 防火墙已成功紧急还原！\n已恢复系统默认入站策略，并清理所有托管规则。", walk.MsgBoxOK|walk.MsgBoxIconInformation)
+		return
+	}
 
 	// 单实例互斥
 	mutexName, _ := windows.UTF16PtrFromString("OneWayFW_SingleInstance_Mutex")
@@ -57,7 +75,12 @@ func main() {
 		if exe, e := os.Executable(); e == nil {
 			verb, _ := windows.UTF16PtrFromString("runas")
 			exePtr, _ := windows.UTF16PtrFromString(exe)
-			if err := windows.ShellExecute(0, verb, exePtr, nil, nil, 1 /*SW_SHOWNORMAL*/); err == nil {
+			params := ""
+			if *minimized {
+				params = "-minimized"
+			}
+			paramPtr, _ := windows.UTF16PtrFromString(params)
+			if err := windows.ShellExecute(0, verb, exePtr, paramPtr, nil, 1 /*SW_SHOWNORMAL*/); err == nil {
 				return // 已交给提权实例，本进程退出
 			}
 			// 提权失败：继续以受限模式运行，界面上会给出提示
@@ -76,10 +99,10 @@ func main() {
 	globalStore = store
 	globalEngine = NewEngine(store, *dryRun)
 
-	log.Printf("OneWayFW v%s 启动，数据目录 %s，dryRun=%v，elevated=%v",
-		version, storeDir(), *dryRun, isElevated())
+	log.Printf("OneWayFW v%s 启动，数据目录 %s，dryRun=%v，elevated=%v, minimized=%v",
+		version, storeDir(), *dryRun, isElevated(), *minimized)
 
-	os.Exit(runGUI(*dryRun))
+	os.Exit(runGUI(*dryRun, *minimized))
 }
 
 func isElevated() bool {

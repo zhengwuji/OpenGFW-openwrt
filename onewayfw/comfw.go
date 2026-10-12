@@ -280,19 +280,10 @@ func readRule(disp *ole.IDispatch, sel ruleSelect) (FwRuleInfo, error) {
 	}
 	info.Name = vString(v)
 
-	if sel.appPath {
-		if v, e := oleutil.GetProperty(disp, "ApplicationName"); e == nil {
-			info.AppPath = vString(v)
-		}
-	}
+	// 快速路径：先读取最轻量且区分度最高的属性
 	if sel.grouping {
 		if v, e := oleutil.GetProperty(disp, "Grouping"); e == nil {
 			info.Grouping = vString(v)
-		}
-	}
-	if sel.enabled {
-		if v, e := oleutil.GetProperty(disp, "Enabled"); e == nil {
-			info.Enabled = vBool(v)
 		}
 	}
 	if sel.direction {
@@ -303,6 +294,26 @@ func readRule(disp *ole.IDispatch, sel ruleSelect) (FwRuleInfo, error) {
 	if sel.action {
 		if v, e := oleutil.GetProperty(disp, "Action"); e == nil {
 			info.Action = vInt(v)
+		}
+	}
+	if sel.enabled {
+		if v, e := oleutil.GetProperty(disp, "Enabled"); e == nil {
+			info.Enabled = vBool(v)
+		}
+	}
+
+	// 性能关键优化：在全量规则扫描（selAll）判定被停用实例时，
+	// 若非托管规则且不是「已启用的入站允许规则」（系统中绝大部分为出站或禁用规则），
+	// 无需继续反射读取 ApplicationName、Protocol、LocalPorts 等 5 个耗时属性，节约成千上万次 COM 调用
+	if sel.protocol && sel.localPorts && sel.remoteAddrs && sel.profiles {
+		if info.Grouping != fwGroup && (info.Direction != dirIn || info.Action != actAllow || !info.Enabled) {
+			return info, nil
+		}
+	}
+
+	if sel.appPath {
+		if v, e := oleutil.GetProperty(disp, "ApplicationName"); e == nil {
+			info.AppPath = vString(v)
 		}
 	}
 	if sel.protocol {
@@ -421,9 +432,16 @@ func removeManagedRules() (int, error) {
 }
 
 // AddManagedAllowRule 添加一条托管入站放行规则
-//   - appPath 为空表示通用端口放行（如局域网放行规则）
-//   - lanOnly=true 时仅允许 LocalSubnet 来源
 func AddManagedAllowRule(name, appPath string, proto int32, lanOnly bool) error {
+	remote := "*"
+	if lanOnly {
+		remote = "LocalSubnet,239.255.255.250,224.0.0.251,224.0.0.252"
+	}
+	return AddManagedAllowRuleScope(name, appPath, proto, remote)
+}
+
+// AddManagedAllowRuleScope 添加一条托管入站放行规则，支持自定义 RemoteAddresses 范围
+func AddManagedAllowRuleScope(name, appPath string, proto int32, remoteAddresses string) error {
 	return withPolicy(func(f *fwPolicy) error {
 		// 已存在同名托管规则则跳过（幂等）
 		exists := false
@@ -456,8 +474,8 @@ func AddManagedAllowRule(name, appPath string, proto int32, lanOnly bool) error 
 			protoName = "UDP"
 		}
 		scope := "任意来源"
-		if lanOnly {
-			scope = "仅限局域网"
+		if remoteAddresses != "" && remoteAddresses != "*" {
+			scope = "指定来源 (" + remoteAddresses + ")"
 		}
 
 		// 每个属性都必须检查返回值：Grouping 写失败会让这条规则不被
@@ -502,8 +520,8 @@ func AddManagedAllowRule(name, appPath string, proto int32, lanOnly bool) error 
 			return err
 		}
 		remote := "*"
-		if lanOnly {
-			remote = "LocalSubnet"
+		if remoteAddresses != "" {
+			remote = remoteAddresses
 		}
 		if err := set("RemoteAddresses", remote); err != nil {
 			return err

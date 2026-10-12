@@ -11,6 +11,8 @@ package main
 
 import (
 	"fmt"
+	"log"
+	"strings"
 	"syscall"
 	"time"
 
@@ -73,10 +75,12 @@ func (m *whitelistModel) Item(i int) (WhitelistEntry, bool) {
 	return m.items[i], true
 }
 
-// listenerModel 展示本机正在监听的端口（procnet.ListListeners）。
+// listenerModel 展示正在监听的端口（带实时过滤检索能力）。
 type listenerModel struct {
 	walk.TableModelBase
-	items []Listener
+	allItems []Listener
+	items    []Listener
+	filter   string
 }
 
 func (m *listenerModel) RowCount() int { return len(m.items) }
@@ -92,7 +96,7 @@ func (m *listenerModel) Value(row, col int) interface{} {
 	case 1:
 		return l.Addr
 	case 2:
-		return l.Port
+		return fmt.Sprintf("%d", l.Port)
 	case 3:
 		return l.ProcName
 	case 4:
@@ -104,7 +108,32 @@ func (m *listenerModel) Value(row, col int) interface{} {
 }
 
 func (m *listenerModel) Set(items []Listener) {
-	m.items = items
+	m.allItems = items
+	m.applyFilter()
+}
+
+func (m *listenerModel) SetFilter(f string) {
+	m.filter = strings.ToLower(strings.TrimSpace(f))
+	m.applyFilter()
+}
+
+func (m *listenerModel) applyFilter() {
+	if m.filter == "" {
+		m.items = m.allItems
+	} else {
+		var filtered []Listener
+		for _, l := range m.allItems {
+			kw := m.filter
+			if strings.Contains(strings.ToLower(l.ProcName), kw) ||
+				strings.Contains(strings.ToLower(l.Proc), kw) ||
+				strings.Contains(fmt.Sprint(l.Port), kw) ||
+				strings.Contains(fmt.Sprint(l.Pid), kw) ||
+				strings.Contains(strings.ToLower(l.Proto), kw) {
+				filtered = append(filtered, l)
+			}
+		}
+		m.items = filtered
+	}
 	m.PublishRowsReset()
 }
 
@@ -159,9 +188,10 @@ type gui struct {
 	btnToggle *walk.PushButton
 	cbLan     *walk.CheckBox
 
-	tvWhitelist *walk.TableView
-	tvListeners *walk.TableView
-	tvLog       *walk.TableView
+	tvWhitelist       *walk.TableView
+	tvListeners       *walk.TableView
+	tvLog             *walk.TableView
+	leFilterListeners *walk.LineEdit
 
 	mWhitelist *whitelistModel
 	mListeners *listenerModel
@@ -170,13 +200,25 @@ type gui struct {
 	sbStatus *walk.StatusBarItem
 	sbInfo   *walk.StatusBarItem
 
-	logPath string
-	busy    bool
-	closed  bool
+	// 系统托盘与后台常驻
+	ni              *walk.NotifyIcon
+	hasShownTrayTip bool
+	forceExit       bool
+
+	// 设置控件
+	cbMinimizeToTray *walk.CheckBox
+	cbAutoStart      *walk.CheckBox
+	cbNotifyOnDrop   *walk.CheckBox
+	leCustomSubnets  *walk.LineEdit
+
+	logPath        string
+	lastMaxLogTime string
+	busy           bool
+	closed         bool
 }
 
 // runGUI 构建并运行主窗口，返回进程退出码。
-func runGUI(dryRun bool) int {
+func runGUI(dryRun bool, startMinimized bool) int {
 	g := &gui{
 		dryRun:     dryRun,
 		mWhitelist: &whitelistModel{},
@@ -186,15 +228,15 @@ func runGUI(dryRun bool) int {
 
 	icon, err := walk.NewIconFromResourceId(appIconID)
 	if err != nil {
-		icon = nil // 资源缺失时退回系统默认图标，不阻断启动
+		icon = nil
 	}
 
 	mw := MainWindow{
 		AssignTo: &g.mw,
 		Title:    appTitle,
 		Icon:     icon,
-		Size:     Size{Width: 1000, Height: 700},
-		MinSize:  Size{Width: 860, Height: 560},
+		Size:     Size{Width: 1020, Height: 720},
+		MinSize:  Size{Width: 880, Height: 580},
 		Layout:   VBox{MarginsZero: false},
 		Children: []Widget{
 			// ---- 顶部状态条 ----
@@ -210,8 +252,8 @@ func runGUI(dryRun bool) int {
 					HSpacer{},
 					CheckBox{
 						AssignTo:         &g.cbLan,
-						Text:             "允许局域网访问本机",
-						ToolTipText:      "勾选后局域网内的设备仍可访问本机共享、远程桌面等；不勾选则只放行本机主动发起的连接。",
+						Text:             "允许局域网访问本机（含设备发现与打印机）",
+						ToolTipText:      "勾选后局域网内的设备仍可访问本机共享、远程桌面等，并自动放行 SSDP/mDNS/WS-Discovery 设备发现；不勾选则只放行本机主动发起的连接。",
 						OnCheckedChanged: func() { g.onLanChanged() },
 					},
 				},
@@ -252,15 +294,13 @@ func runGUI(dryRun bool) int {
 					g.whitelistPage(),
 					g.listenerPage(),
 					g.logPage(),
+					g.settingsPage(),
 					g.aboutPage(),
 				},
 			},
 		},
 		StatusBarItems: []StatusBarItem{
 			{AssignTo: &g.sbStatus, Text: "就绪", Width: 200},
-			// walk 的 StatusBar.updateParts 用「累加右边界」计算各段位置，
-			// 只有单段时才会写成 -1（自动延伸到最右）。这里给最后一段一个
-			// 足够大的宽度，Windows 会把超出客户区的部分裁掉，效果等同于撑满。
 			{AssignTo: &g.sbInfo, Text: "", Width: 3000},
 		},
 	}
@@ -270,34 +310,135 @@ func runGUI(dryRun bool) int {
 		return 1
 	}
 
-	// 关闭窗口前先还原防火墙
+	// 初始化系统托盘
+	g.setupTray(icon)
+
+	// 关闭窗口处理：优先最小化到系统托盘，保持后台防护
 	g.mw.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
-		if globalEngine == nil || globalStore == nil {
+		if reason != walk.CloseReasonUser && reason != walk.CloseReasonUnknown {
 			return
 		}
-		if globalEngine.dryRun || !globalStore.State().Applied {
+
+		if !g.forceExit && globalStore != nil && globalStore.Config().MinimizeToTray {
+			*canceled = true
+			g.mw.Hide()
+			if !g.hasShownTrayTip && g.ni != nil {
+				g.hasShownTrayTip = true
+				_ = g.ni.ShowInfo("OneWayFW 已最小化到托盘", "单击托盘图标可重新打开主面板，右键托盘图标可查看操作菜单。")
+			}
 			return
 		}
-		// 关机/注销由子类化窗口过程直接处理，这里只处理用户主动关闭
-		if reason == walk.CloseReasonUser || reason == walk.CloseReasonUnknown {
-			msg := "关闭窗口会同时关闭防护，并把 Windows 防火墙恢复到开启前的状态。\n\n确定关闭吗？"
+
+		// 用户主动彻底退出程序时，确认还原防火墙
+		if globalEngine != nil && globalStore != nil && !globalEngine.dryRun && globalStore.State().Applied {
+			msg := "关闭程序会同时关闭单向防护，并把 Windows 防火墙恢复到开启前的状态。\n\n确定退出程序吗？"
 			if walk.MsgBox(g.mw, appTitle, msg, walk.MsgBoxYesNo|walk.MsgBoxIconQuestion) != win.IDYES {
 				*canceled = true
+				g.forceExit = false
 				return
 			}
-		}
-		if err := globalEngine.Stop(); err != nil {
-			walk.MsgBox(g.mw, appTitle,
-				"还原防火墙时出现问题：\n"+err.Error()+
-					"\n\n防护状态已记录，重新启动 OneWayFW 后可再次尝试还原。",
-				walk.MsgBoxOK|walk.MsgBoxIconWarning)
+			if err := globalEngine.Stop(); err != nil {
+				walk.MsgBox(g.mw, appTitle,
+					"还原防火墙时出现问题：\n"+err.Error()+
+						"\n\n防护状态已记录，重新启动 OneWayFW 后可再次尝试还原。",
+					walk.MsgBoxOK|walk.MsgBoxIconWarning)
+			}
 		}
 	})
 
 	g.installSubclass()
 	g.startTimers()
 
+	// 若启动参数指定了 -minimized，则静默隐藏至托盘
+	if startMinimized {
+		g.mw.Hide()
+	}
+
 	return g.mw.Run()
+}
+
+// setupTray 初始化 Windows 任务栏系统托盘图标与右键菜单
+func (g *gui) setupTray(icon *walk.Icon) {
+	ni, err := walk.NewNotifyIcon(g.mw)
+	if err != nil {
+		log.Printf("创建系统托盘失败: %v", err)
+		return
+	}
+	g.ni = ni
+	if icon != nil {
+		_ = ni.SetIcon(icon)
+	}
+	_ = ni.SetToolTip(appTitle)
+	_ = ni.SetVisible(true)
+
+	// 单击托盘图标打开主窗口
+	ni.MouseDown().Attach(func(x, y int, button walk.MouseButton) {
+		if button == walk.LeftButton {
+			g.showMainWindow()
+		}
+	})
+
+	// 托盘右键菜单
+	menu := ni.ContextMenu()
+
+	actionShow := walk.NewAction()
+	_ = actionShow.SetText("显示主面板")
+	actionShow.Triggered().Attach(func() {
+		g.showMainWindow()
+	})
+	_ = menu.Actions().Add(actionShow)
+
+	actionSep1 := walk.NewSeparatorAction()
+	_ = menu.Actions().Add(actionSep1)
+
+	actionToggle := walk.NewAction()
+	_ = actionToggle.SetText("切换防护状态")
+	actionToggle.Triggered().Attach(func() {
+		go g.toggle()
+	})
+	_ = menu.Actions().Add(actionToggle)
+
+	actionRestore := walk.NewAction()
+	_ = actionRestore.SetText("紧急还原防火墙")
+	actionRestore.Triggered().Attach(func() {
+		if walk.MsgBox(g.mw, appTitle, "确定执行紧急还原吗？\n将重置系统默认策略并清除所有 OneWayFW 托管规则。", walk.MsgBoxYesNo|walk.MsgBoxIconQuestion) == win.IDYES {
+			go func() {
+				err := EmergencyResetDirect(globalStore)
+				g.sync(func() {
+					g.refreshStatus()
+					if err != nil {
+						walk.MsgBox(g.mw, appTitle, "紧急还原失败:\n"+err.Error(), walk.MsgBoxOK|walk.MsgBoxIconError)
+					} else {
+						walk.MsgBox(g.mw, appTitle, "✅ 防火墙已成功紧急还原！", walk.MsgBoxOK|walk.MsgBoxIconInformation)
+					}
+				})
+			}()
+		}
+	})
+	_ = menu.Actions().Add(actionRestore)
+
+	actionSep2 := walk.NewSeparatorAction()
+	_ = menu.Actions().Add(actionSep2)
+
+	actionExit := walk.NewAction()
+	_ = actionExit.SetText("退出程序")
+	actionExit.Triggered().Attach(func() {
+		g.exitApp()
+	})
+	_ = menu.Actions().Add(actionExit)
+}
+
+func (g *gui) showMainWindow() {
+	g.mw.Show()
+	if win.IsIconic(g.mw.Handle()) {
+		win.ShowWindow(g.mw.Handle(), win.SW_RESTORE)
+	}
+	win.SetForegroundWindow(g.mw.Handle())
+}
+
+func (g *gui) exitApp() {
+	g.forceExit = true
+	g.mw.Close()
 }
 
 // ---------------------------------------------------------------- 各功能页
@@ -317,9 +458,15 @@ func (g *gui) whitelistPage() TabPage {
 						OnClicked: func() { g.addProgram() },
 					},
 					PushButton{
+						Text:      "常用服务加白…",
+						MinSize:   Size{Width: 125},
+						MaxSize:   Size{Width: 125},
+						OnClicked: func() { g.showPresetsDialog() },
+					},
+					PushButton{
 						Text:      "移除选中",
-						MinSize:   Size{Width: 110},
-						MaxSize:   Size{Width: 110},
+						MinSize:   Size{Width: 100},
+						MaxSize:   Size{Width: 100},
 						OnClicked: func() { g.removeSelectedProgram() },
 					},
 					HSpacer{},
@@ -334,7 +481,7 @@ func (g *gui) whitelistPage() TabPage {
 				Columns: []TableViewColumn{
 					{Title: "程序", Width: 170},
 					{Title: "路径", Width: 400},
-					{Title: "备注", Width: 130},
+					{Title: "备注", Width: 140},
 					{Title: "添加时间", Width: 150},
 				},
 			},
@@ -350,6 +497,19 @@ func (g *gui) listenerPage() TabPage {
 			Composite{
 				Layout: HBox{MarginsZero: true},
 				Children: []Widget{
+					Label{Text: "🔍 检索过滤:"},
+					LineEdit{
+						AssignTo: &g.leFilterListeners,
+						MinSize:  Size{Width: 180},
+						MaxSize:  Size{Width: 240},
+						ToolTipText: "支持实时按端口、进程名、路径或 PID 过滤检索",
+						OnTextChanged: func() {
+							if g.mListeners != nil {
+								g.mListeners.SetFilter(g.leFilterListeners.Text())
+							}
+						},
+					},
+					HSpacer{Size: 8},
 					PushButton{
 						Text:      "将选中进程加入白名单",
 						MinSize:   Size{Width: 170},
@@ -363,7 +523,6 @@ func (g *gui) listenerPage() TabPage {
 						OnClicked: func() { go g.reloadListeners() },
 					},
 					HSpacer{},
-					Label{Text: "列出本机正在监听的端口。若某个程序需要被外部主动连接，请把它加入白名单。"},
 				},
 			},
 			TableView{
@@ -425,6 +584,141 @@ func (g *gui) logPage() TabPage {
 	}
 }
 
+func (g *gui) settingsPage() TabPage {
+	cfg := defaultConfig()
+	if globalStore != nil {
+		cfg = globalStore.Config()
+	}
+
+	return TabPage{
+		Title:  "偏好设置",
+		Layout: VBox{Margins: Margins{Top: 12, Left: 12, Bottom: 12, Right: 12}},
+		Children: []Widget{
+			GroupBox{
+				Title:  "运行与交互设置",
+				Layout: VBox{Margins: Margins{Top: 10, Left: 10, Bottom: 10, Right: 10}},
+				Children: []Widget{
+					CheckBox{
+						AssignTo: &g.cbMinimizeToTray,
+						Text:     "点击关闭 [X] 时最小化到系统托盘，保持后台守护",
+						Checked:  cfg.MinimizeToTray,
+						OnCheckedChanged: func() {
+							if globalStore != nil {
+								c := globalStore.Config()
+								c.MinimizeToTray = g.cbMinimizeToTray.Checked()
+								_ = globalStore.SaveConfig(c)
+							}
+						},
+					},
+					CheckBox{
+						AssignTo: &g.cbAutoStart,
+						Text:     "开机自动启动（免 UAC 弹窗提示，静默进入托盘）",
+						Checked:  cfg.AutoStart,
+						OnCheckedChanged: func() {
+							if globalStore == nil {
+								return
+							}
+							enable := g.cbAutoStart.Checked()
+							if err := SetAutoStart(enable); err != nil {
+								walk.MsgBox(g.mw, appTitle, "设置开机启动失败:\n"+err.Error(), walk.MsgBoxOK|walk.MsgBoxIconError)
+								g.cbAutoStart.SetChecked(!enable)
+								return
+							}
+							c := globalStore.Config()
+							c.AutoStart = enable
+							_ = globalStore.SaveConfig(c)
+						},
+					},
+					CheckBox{
+						AssignTo: &g.cbNotifyOnDrop,
+						Text:     "检测到外部连接被拦截时，在托盘弹出气泡通知",
+						Checked:  cfg.NotifyOnDrop,
+						OnCheckedChanged: func() {
+							if globalStore != nil {
+								c := globalStore.Config()
+								c.NotifyOnDrop = g.cbNotifyOnDrop.Checked()
+								_ = globalStore.SaveConfig(c)
+							}
+						},
+					},
+				},
+			},
+			VSpacer{Size: 6},
+			GroupBox{
+				Title:  "高级网络与多网卡扩展",
+				Layout: VBox{Margins: Margins{Top: 10, Left: 10, Bottom: 10, Right: 10}},
+				Children: []Widget{
+					Label{Text: "自定义局域网扩展网段（可选，多个网段用逗号分隔，如: 192.0.2.0/24, 198.51.100.0/24）:"},
+					Composite{
+						Layout: HBox{MarginsZero: true},
+						Children: []Widget{
+							LineEdit{
+								AssignTo: &g.leCustomSubnets,
+								Text:     cfg.CustomSubnets,
+							},
+							PushButton{
+								Text:    "保存网段",
+								MinSize: Size{Width: 90},
+								MaxSize: Size{Width: 90},
+								OnClicked: func() {
+									if globalStore == nil {
+										return
+									}
+									c := globalStore.Config()
+									c.CustomSubnets = strings.TrimSpace(g.leCustomSubnets.Text())
+									if err := globalStore.SaveConfig(c); err != nil {
+										walk.MsgBox(g.mw, appTitle, "保存失败:\n"+err.Error(), walk.MsgBoxOK|walk.MsgBoxIconError)
+									} else {
+										walk.MsgBox(g.mw, appTitle, "已保存自定义网段！已即时更新规则。", walk.MsgBoxOK|walk.MsgBoxIconInformation)
+										if globalEngine != nil && globalEngine.Running() {
+											go func() { _ = globalEngine.ReloadWhitelist(g.cbLan.Checked()) }()
+										}
+									}
+								},
+							},
+						},
+					},
+					Label{Text: "适用于拥有虚拟网卡（Hyper-V / WSL2 / VMware）或虚拟内网（Tailscale/ZeroTier）的环境。"},
+				},
+			},
+			VSpacer{Size: 6},
+			GroupBox{
+				Title:  "容灾与应急重置",
+				Layout: VBox{Margins: Margins{Top: 10, Left: 10, Bottom: 10, Right: 10}},
+				Children: []Widget{
+					Label{Text: "如果系统发生断电或意外强杀导致入站端口无法访问，可随时在此执行一键重置："},
+					Composite{
+						Layout: HBox{MarginsZero: true},
+						Children: []Widget{
+							PushButton{
+								Text:    "🚨 一键紧急重置防火墙",
+								MinSize: Size{Width: 180},
+								OnClicked: func() {
+									if walk.MsgBox(g.mw, appTitle, "确定要执行紧急还原吗？\n\n将重置 Windows 防火墙默认入站策略，并清理所有 OneWayFW 托管规则。", walk.MsgBoxYesNo|walk.MsgBoxIconWarning) == win.IDYES {
+										go func() {
+											err := EmergencyResetDirect(globalStore)
+											g.sync(func() {
+												g.refreshStatus()
+												if err != nil {
+													walk.MsgBox(g.mw, appTitle, "紧急还原失败:\n"+err.Error(), walk.MsgBoxOK|walk.MsgBoxIconError)
+												} else {
+													walk.MsgBox(g.mw, appTitle, "✅ 防火墙已成功紧急还原！", walk.MsgBoxOK|walk.MsgBoxIconInformation)
+												}
+											})
+										}()
+									}
+								},
+							},
+							HSpacer{},
+						},
+					},
+				},
+			},
+			VSpacer{},
+		},
+	}
+}
+
 func (g *gui) aboutPage() TabPage {
 	return TabPage{
 		Title:  "关于",
@@ -439,8 +733,8 @@ func (g *gui) aboutPage() TabPage {
 			Label{Text: "数据目录：" + storeDir()},
 			Label{AssignTo: nil, Text: "日志文件：%ProgramData%\\OneWayFW\\onewayfw.log"},
 			VSpacer{Size: 8},
-			Label{Text: "提示：关闭本窗口会还原防火墙设置；若程序被强制结束，"},
-			Label{Text: "      防护仍在生效，重新启动本程序点击「关闭防护并还原」即可恢复。"},
+			Label{Text: "提示：可在【偏好设置】开启开机静默启动与托盘常驻守护；"},
+			Label{Text: "      若遇异常，随时可通过 OneWayFW.exe -restore 或界面一键紧急还原。"},
 		},
 	}
 }
@@ -468,11 +762,17 @@ func (g *gui) refreshStatus() {
 		g.lblStatus.SetTextColor(colorOK)
 		_ = g.btnToggle.SetText("关闭防护并还原")
 		_ = g.sbStatus.SetText("防护运行中")
+		if g.ni != nil {
+			_ = g.ni.SetToolTip("OneWayFW 单向防火墙 - 防护已开启")
+		}
 	} else {
 		_ = g.lblStatus.SetText("防护未开启：当前为 Windows 防火墙默认策略")
 		g.lblStatus.SetTextColor(colorIdle)
 		_ = g.btnToggle.SetText("开启防护")
 		_ = g.sbStatus.SetText("防护未开启")
+		if g.ni != nil {
+			_ = g.ni.SetToolTip("OneWayFW 单向防火墙 - 防护未开启")
+		}
 	}
 
 	if g.cbLan.Checked() != lan {
@@ -494,7 +794,7 @@ func (g *gui) refreshStatus() {
 		_ = g.lblHint.SetText("")
 	}
 
-	// 日志路径（带 30 秒缓存，失败时保持上一次取值）
+	// 日志路径（带缓存）
 	if _, p, err := GetFwLogStateCached(); err == nil && p != "" {
 		g.logPath = p
 	}
@@ -525,7 +825,7 @@ func (g *gui) reloadListeners() {
 	})
 }
 
-// reloadLog 在后台读取防火墙日志尾部，再回到 UI 线程刷新表格。
+// reloadLog 在后台读取防火墙日志尾部，再回到 UI 线程刷新表格并触发气泡提醒。
 func (g *gui) reloadLog() {
 	path := g.logPath
 	if path == "" {
@@ -538,6 +838,19 @@ func (g *gui) reloadLog() {
 	}
 	entries, _ := ReadDropLog(path, 300)
 	g.sync(func() {
+		// 检测是否有新丢弃条目产生，按需弹气泡通知
+		if len(entries) > 0 {
+			newest := entries[0]
+			if g.lastMaxLogTime != "" && newest.Time > g.lastMaxLogTime {
+				if globalStore != nil && globalStore.Config().NotifyOnDrop && g.ni != nil {
+					_ = g.ni.ShowInfo("OneWayFW 拦截提醒",
+						fmt.Sprintf("已拦截来自 %s:%s 的外部连入请求 (目的端口 %s, %s)",
+							newest.SrcIP, newest.SrcPort, newest.DstPort, newest.Proto))
+				}
+			}
+			g.lastMaxLogTime = newest.Time
+		}
+
 		g.mLog.Set(entries)
 		if g.tvLog != nil {
 			_ = g.tvLog.Invalidate()
@@ -549,7 +862,7 @@ func (g *gui) startTimers() {
 	go func() {
 		fast := time.NewTicker(3 * time.Second)  // 状态
 		slow := time.NewTicker(8 * time.Second)  // 监听端口
-		logs := time.NewTicker(15 * time.Second) // 拦截日志
+		logs := time.NewTicker(12 * time.Second) // 拦截日志
 		defer fast.Stop()
 		defer slow.Stop()
 		defer logs.Stop()
@@ -658,10 +971,14 @@ func (g *gui) addProgram() {
 }
 
 func (g *gui) addPath(path string) {
+	g.addPathWithNote(path, "")
+}
+
+func (g *gui) addPathWithNote(path, note string) {
 	if globalStore == nil {
 		return
 	}
-	added, err := globalStore.AddWhitelist(path, "")
+	added, err := globalStore.AddWhitelist(path, note)
 	if err != nil {
 		walk.MsgBox(g.mw, appTitle, "添加失败：\n"+err.Error(), walk.MsgBoxOK|walk.MsgBoxIconError)
 		return
@@ -716,6 +1033,97 @@ func (g *gui) whitelistSelectedListener() {
 	g.addPath(l.Proc)
 }
 
+// showPresetsDialog 常用服务加白快捷对话框
+func (g *gui) showPresetsDialog() {
+	var dlg *walk.Dialog
+
+	d := Dialog{
+		AssignTo: &dlg,
+		Title:    "常用服务一键加白",
+		MinSize:  Size{Width: 380, Height: 240},
+		Layout:   VBox{Margins: Margins{Top: 14, Left: 14, Bottom: 14, Right: 14}},
+		Children: []Widget{
+			Label{Text: "点击下方按钮，快速将常见服务/联机工具加入放行白名单：", Font: Font{Bold: true}},
+			VSpacer{Size: 6},
+			PushButton{
+				Text: "🖥️ 放行远程桌面 (RDP 3389 / svchost.exe)",
+				OnClicked: func() {
+					dlg.Accept()
+					g.addPresetRDP()
+				},
+			},
+			PushButton{
+				Text: "🌐 放行当前监听中的 Web 开发服务 (80/443/8080/3000)",
+				OnClicked: func() {
+					dlg.Accept()
+					g.addPresetWeb()
+				},
+			},
+			PushButton{
+				Text: "🎮 放行 Steam 游戏平台客户端",
+				OnClicked: func() {
+					dlg.Accept()
+					g.addPresetSteam()
+				},
+			},
+			VSpacer{},
+			PushButton{
+				Text:      "取消",
+				OnClicked: func() { dlg.Cancel() },
+			},
+		},
+	}
+	_, _ = d.Run(g.mw)
+}
+
+func (g *gui) addPresetRDP() {
+	rdpPath := `C:\Windows\System32\svchost.exe`
+	if fileExists(rdpPath) {
+		g.addPathWithNote(rdpPath, "Windows 远程桌面服务 (RDP 3389)")
+	} else {
+		walk.MsgBox(g.mw, appTitle, "未定位到系统 svchost.exe 路径", walk.MsgBoxOK|walk.MsgBoxIconWarning)
+	}
+}
+
+func (g *gui) addPresetWeb() {
+	if globalStore == nil {
+		return
+	}
+	ls := ListListeners(globalStore.InWhitelist)
+	count := 0
+	targetPorts := map[uint16]bool{80: true, 443: true, 8080: true, 3000: true, 5173: true}
+	for _, l := range ls {
+		if targetPorts[l.Port] && l.Proc != "" && !l.Whitelisted {
+			if added, _ := globalStore.AddWhitelist(l.Proc, fmt.Sprintf("Web服务 (端口 %d)", l.Port)); added {
+				count++
+			}
+		}
+	}
+	if count > 0 {
+		g.refreshWhitelist()
+		g.applyWhitelist()
+		walk.MsgBox(g.mw, appTitle, fmt.Sprintf("已成功放行 %d 个 Web 开发进程！", count), walk.MsgBoxOK|walk.MsgBoxIconInformation)
+	} else {
+		walk.MsgBox(g.mw, appTitle, "当前未检测到监听 80/443/8080/3000/5173 的未放行进程。\n若服务已启动，可在【监听端口】标签中直接选中加白。", walk.MsgBoxOK|walk.MsgBoxIconInformation)
+	}
+}
+
+func (g *gui) addPresetSteam() {
+	paths := []string{
+		`C:\Program Files (x86)\Steam\steam.exe`,
+		`C:\Program Files\Steam\steam.exe`,
+		`D:\Steam\steam.exe`,
+		`E:\Steam\steam.exe`,
+	}
+	for _, p := range paths {
+		if fileExists(p) {
+			g.addPathWithNote(p, "Steam 平台")
+			return
+		}
+	}
+	walk.MsgBox(g.mw, appTitle, "未在常见路径中检测到 Steam 安装路径，请使用【添加程序…】手动选择 steam.exe。", walk.MsgBoxOK|walk.MsgBoxIconInformation)
+}
+
 // applyWhitelist 在防护运行中把白名单变更热更新到防火墙规则。
 func (g *gui) applyWhitelist() {
 	if globalEngine == nil || !globalEngine.Running() {
@@ -734,10 +1142,6 @@ func (g *gui) applyWhitelist() {
 
 // ---------------------------------------------------------------- 关机/注销拦截
 
-// walk 不处理 WM_QUERYENDSESSION / WM_ENDSESSION（全包无引用），
-// 而 MainWindow 的窗口类由 walk 自己注册，walk 不会对它做子类化
-// （walk/window.go:650 只在未注册过的类上安装 defaultWndProc），
-// 因此这里可以安全地自行接管窗口过程并在关机/注销时还原防火墙。
 var (
 	mainWndProcPrev     uintptr
 	mainWndProcCallback = syscall.NewCallback(mainWndProc)
@@ -754,7 +1158,6 @@ func (g *gui) installSubclass() {
 func mainWndProc(hwnd win.HWND, msg uint32, wParam, lParam uintptr) uintptr {
 	switch msg {
 	case win.WM_QUERYENDSESSION:
-		// 允许系统继续关机/注销，真正的还原放在 WM_ENDSESSION
 		return 1
 	case win.WM_ENDSESSION:
 		if wParam != 0 {
