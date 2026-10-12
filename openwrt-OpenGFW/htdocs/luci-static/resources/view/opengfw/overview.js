@@ -300,7 +300,22 @@ return view.extend({
 									]);
 								});
 							})
-						}, _('🌐 更新基础规则库'))
+						}, _('🌐 更新基础规则库')),
+						E('button', {
+							'class': 'btn cbi-button cbi-button-reset',
+							'click': ui.createHandlerFn(this, function() {
+								if (!confirm(_('确定清空 OpenGFW 实时拦截记录与统计看板吗？\n\n清空后将重置 Top 域名统计、受限设备与拦截计数，并重新开始记录。'))) return;
+								return fs.exec('/usr/bin/opengfw-clear-logs').then(function() {
+									return fs.exec('/usr/bin/opengfw-status').then(function(res) {
+										try {
+											let out = (res && res.code === 0 && res.stdout) ? res.stdout.trim() : '';
+											updateStatusUI(safeJsonParse(out));
+										} catch(e) {}
+										ui.addNotification(null, E('p', {}, _('✅ 实时拦截统计记录已清空，正在重新开始记录！')), 'info');
+									});
+								});
+							})
+						}, _('🧹 清空看板记录'))
 					])
 				]),
 				E('div', {
@@ -323,7 +338,26 @@ return view.extend({
 				// 📊 拦截统计 Top 看板
 				E('div', { 'id': 'opengfw_top_analytics_container', 'style': 'margin-top: 15px; border-top: 1px solid #e5e5e5; padding-top: 12px;' }, [
 					E('div', { 'style': 'display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;' }, [
-						E('h4', { 'style': 'margin: 0; font-size: 14px; font-weight: bold;' }, _('📊 实时拦截 Top 统计看板 (近2000次阻断深度聚合)')),
+						E('div', { 'style': 'display: flex; align-items: center; gap: 8px;' }, [
+							E('h4', { 'style': 'margin: 0; font-size: 14px; font-weight: bold;' }, _('📊 实时拦截 Top 统计看板 (近2000次阻断深度聚合)')),
+							E('button', {
+								'class': 'btn cbi-button cbi-button-reset',
+								'style': 'padding: 2px 8px; font-size: 11px; margin-left: 6px;',
+								'click': function(ev) {
+									ev.preventDefault();
+									if (!confirm(_('确定清空 OpenGFW 实时拦截记录与统计看板吗？\n\n清空后将重置 Top 域名统计、受限设备与拦截计数，并重新开始记录。'))) return;
+									return fs.exec('/usr/bin/opengfw-clear-logs').then(function() {
+										return fs.exec('/usr/bin/opengfw-status').then(function(res) {
+											try {
+												let out = (res && res.code === 0 && res.stdout) ? res.stdout.trim() : '';
+												updateStatusUI(safeJsonParse(out));
+											} catch(e) {}
+											ui.addNotification(null, E('p', {}, _('✅ 实时拦截统计记录已清空，正在重新开始记录！')), 'info');
+										});
+									});
+								}
+							}, _('🧹 清空看板记录'))
+						]),
 						E('span', { 'style': 'font-size: 12px; color: #888;' }, _('点击【⚡ 加白】放行误杀域名，点击【🚀 设为直通】免除该设备一切审查'))
 					]),
 					E('div', { 'style': 'display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 15px;' }, [
@@ -599,7 +633,7 @@ return view.extend({
 
 			let inputIp = E('input', {
 				'type': 'text',
-				'placeholder': '例如: 192.168.1.100',
+				'placeholder': '例如: 192.0.2.100',
 				'class': 'cbi-input-text',
 				'style': 'max-width: 150px; margin-right: 8px;'
 			});

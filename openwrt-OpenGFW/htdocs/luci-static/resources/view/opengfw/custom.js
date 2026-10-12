@@ -68,6 +68,13 @@ return view.extend({
 		let currentRules = Array.isArray(rawData.rules) ? rawData.rules : [];
 		let ccMap = rawData.cc || {};
 
+		const COUNTRY_CN_MAP = {"cn": "中国大陆", "hk": "中国香港", "mo": "中国澳门", "tw": "中国台湾", "us": "美国", "jp": "日本", "kr": "韩国", "ru": "俄罗斯", "sg": "新加坡", "my": "马来西亚", "th": "泰国", "vn": "越南", "ph": "菲律宾", "id": "印度尼西亚", "in": "印度", "pk": "巴基斯坦", "bd": "孟加拉国", "mm": "缅甸", "kh": "柬埔寨", "la": "老挝", "np": "尼泊尔", "lk": "斯里兰卡", "mn": "蒙古", "kp": "朝鲜", "kz": "哈萨克斯坦", "uz": "乌兹别克斯坦", "kg": "吉尔吉斯斯坦", "tj": "塔吉克斯坦", "tm": "土库曼斯坦", "af": "阿富汗", "ae": "阿联酋", "sa": "沙特阿拉伯", "ir": "伊朗", "iq": "伊拉克", "il": "以色列", "tr": "土耳其", "qa": "卡塔尔", "kw": "科威特", "om": "阿曼", "bh": "巴林", "jo": "约旦", "lb": "黎巴嫩", "sy": "叙利亚", "ye": "也门", "ge": "格鲁吉亚", "am": "亚美尼亚", "az": "阿塞拜疆", "ps": "巴勒斯坦", "bn": "文莱", "bt": "不丹", "mv": "马尔代夫", "tl": "东帝汶", "gb": "英国", "de": "德国", "fr": "法国", "nl": "荷兰", "it": "意大利", "es": "西班牙", "ua": "乌克兰", "pl": "波兰", "se": "瑞典", "ch": "瑞士", "no": "挪威", "fi": "芬兰", "dk": "丹麦", "ie": "爱尔兰", "be": "比利时", "at": "奥地利", "pt": "葡萄牙", "gr": "希腊", "cz": "捷克", "ro": "罗马尼亚", "hu": "匈牙利", "by": "白俄罗斯", "bg": "保加利亚", "rs": "塞尔维亚", "hr": "克罗地亚", "sk": "斯洛伐克", "si": "斯洛文尼亚", "lt": "立陶宛", "lv": "拉脱维亚", "ee": "爱沙尼亚", "is": "冰岛", "lu": "卢森堡", "al": "阿尔巴尼亚", "ba": "波黑", "md": "摩尔多瓦", "mk": "北马其顿", "me": "黑山", "mt": "马耳他", "cy": "塞浦路斯", "ad": "安道尔", "mc": "摩纳哥", "li": "列支敦士登", "sm": "圣马力诺", "va": "梵蒂冈", "gi": "直布罗陀", "fo": "法罗群岛", "im": "马恩岛", "je": "泽西岛", "gg": "根西岛", "ax": "奥兰群岛", "sj": "斯瓦尔巴和扬马延", "ca": "加拿大", "mx": "墨西哥", "br": "巴西", "ar": "阿根廷", "cl": "智利", "co": "哥伦比亚", "pe": "秘鲁", "ve": "委内瑞拉", "ec": "厄瓜多尔", "uy": "乌拉圭", "py": "巴拉圭", "bo": "玻利维亚", "cu": "古巴", "pa": "巴拿马", "cr": "哥斯达黎加", "do": "多米尼加", "gt": "危地马拉", "hn": "洪都拉斯", "ni": "尼加拉瓜", "sv": "萨尔瓦多", "jm": "牙买加", "ht": "海地", "bs": "巴哈马", "tt": "特立尼达和多巴哥", "bb": "巴巴多斯", "gy": "圭亚那", "sr": "苏里南", "bz": "伯利兹", "gl": "格陵兰", "bm": "百慕大", "pr": "波多黎各", "ky": "开曼群岛", "vg": "英属维尔京群岛", "vi": "美属维尔京群岛", "aw": "阿鲁巴", "cw": "库拉索", "sx": "荷属圣马丁", "bq": "荷属加勒比", "tc": "特克斯和凯科斯群岛", "ag": "安提瓜和巴布达", "dm": "多米尼克", "lc": "圣卢西亚", "vc": "圣文森特和格林纳丁斯", "gd": "格林纳达", "kn": "圣基茨和尼维斯", "ai": "安圭拉", "ms": "蒙特塞拉特", "gp": "瓜德罗普", "mq": "马提尼克", "bl": "圣巴泰勒米", "mf": "法属圣马丁", "gf": "法属圭亚那", "pm": "圣皮埃尔和密克隆", "fk": "福克兰群岛", "au": "澳大利亚", "nz": "新西兰", "pg": "巴布亚新几内亚", "fj": "斐济", "sb": "所罗门群岛", "vu": "瓦努阿图", "ws": "萨摩亚", "to": "汤加", "fm": "密克罗尼西亚", "ki": "基里巴斯", "mh": "马绍尔群岛", "pw": "帕劳", "nr": "瑙鲁", "tv": "图瓦卢", "gu": "关岛", "nc": "新喀里多尼亚", "pf": "法属波利尼西亚", "mp": "北马里亚纳群岛", "as": "美属萨摩亚", "ck": "库克群岛", "nu": "纽埃", "tk": "托克劳", "wf": "瓦利斯和富图纳", "nf": "诺福克岛", "za": "南非", "eg": "埃及", "ng": "尼日利亚", "ke": "肯尼亚", "ma": "摩洛哥", "et": "埃塞俄比亚", "gh": "加纳", "dz": "阿尔及利亚", "tn": "突尼斯", "ug": "乌干达", "tz": "坦桑尼亚", "ao": "安哥拉", "ci": "科特迪瓦", "cm": "喀麦隆", "sn": "塞内加尔", "zm": "赞比亚", "zw": "津巴布韦", "sd": "苏丹", "ss": "南苏丹", "ly": "利比亚", "mu": "毛里求斯", "mg": "马达加斯加", "mz": "莫桑比克", "na": "纳米比亚", "bw": "博茨瓦纳", "rw": "卢旺达", "so": "索马里", "cg": "刚果共和国", "cd": "刚果民主共和国", "ga": "加蓬", "gn": "几内亚", "gw": "几内亚比绍", "gq": "赤道几内亚", "sl": "塞拉利昂", "lr": "利比里亚", "ml": "马里", "bf": "布基纳法索", "ne": "尼日尔", "td": "乍得", "cf": "中非共和国", "mr": "毛里塔尼亚", "er": "厄立特里亚", "dj": "吉布提", "bi": "布隆迪", "mw": "马拉维", "ls": "莱索托", "sz": "斯威士兰", "gm": "冈比亚", "tg": "多哥", "bj": "贝宁", "cv": "佛得角", "st": "圣多美和普林西比", "sc": "塞舌尔", "km": "科摩罗", "re": "留尼汪", "yt": "马约特", "sh": "圣赫勒拿", "eh": "西撒哈拉", "aq": "南极洲", "bv": "布韦岛", "gs": "南乔治亚和南桑威奇群岛", "hm": "赫德岛和麦克唐纳群岛", "io": "英属印度洋领地", "tf": "法属南部和南极领地", "um": "美国本土外小岛屿"};
+
+		function getCountryName(cc) {
+			if (!cc) return '';
+			let code = ('' + cc).trim().toLowerCase();
+			return COUNTRY_CN_MAP[code] || cc.toUpperCase();
+		}
 		// 国家代码 → 旗帜 emoji
 		function ccFlag(cc) {
 			if (!cc || !/^[A-Za-z]{2}$/.test(cc)) return '';
@@ -121,7 +128,7 @@ return view.extend({
 			'type': 'text',
 			'class': 'cbi-input-text',
 			'style': 'flex: 1; min-width: 220px; font-family: monospace; font-size: 13px;',
-			'placeholder': _('例如: ads.example.com 或 198.51.100.1 或 1.2.3.0/24')
+			'placeholder': _('例如: ads.example.com 或 198.51.100.1 或 203.0.113.0/24')
 		});
 
 		let actionSelect = E('select', { 'class': 'cbi-input-select', 'style': 'width: 140px;' }, [
@@ -332,13 +339,13 @@ return view.extend({
 					E('span', { 'style': 'background: #e0f2fe; color: #0369a1; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 11px;' }, '🌐 域名') :
 					E('span', { 'style': 'background: #fef3c7; color: #b45309; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 11px;' }, '🖥️ IP网段');
 
-				// IP 条目旁显示归属国家旗帜
+				// IP 条目旁显示归属国家中文名称
 				let ccBadge = null;
 				if (r.type === 'ip') {
 					let cc = ccMap[(r.value || '').split('/')[0]] || '';
-					let flag = ccFlag(cc);
-					if (flag) {
-						ccBadge = E('span', { 'style': 'margin-left: 8px; font-size: 12px; background: #f1f5f9; color: #334155; padding: 1px 7px; border-radius: 10px;' }, flag + ' ' + cc.toUpperCase());
+					if (cc) {
+						let cName = getCountryName(cc);
+						ccBadge = E('span', { 'style': 'margin-left: 8px; font-size: 12px; background: #f1f5f9; color: #334155; padding: 1px 7px; border-radius: 10px;' }, cName);
 					}
 				}
 
@@ -534,8 +541,8 @@ return view.extend({
 				recentBody.appendChild(E('tr', { 'style': 'border-bottom: 1px solid #f1f5f9;' }, [
 					E('td', { 'style': 'text-align: center; color: #999; font-size: 12px;' }, String(idx + 1)),
 					E('td', { 'style': 'font-family: monospace; font-size: 13px; font-weight: bold;' },
-						it.country && ccFlag(it.country) ?
-							[ it.ip, E('span', { 'style': 'margin-left: 8px; font-size: 12px; font-weight: normal; background: #f1f5f9; color: #334155; padding: 1px 7px; border-radius: 10px;' }, ccFlag(it.country) + ' ' + it.country.toUpperCase()) ] :
+						it.country ?
+							[ it.ip, E('span', { 'style': 'margin-left: 8px; font-size: 12px; font-weight: normal; background: #f1f5f9; color: #334155; padding: 1px 7px; border-radius: 10px;' }, getCountryName(it.country)) ] :
 							it.ip),
 					E('td', { 'style': 'text-align: center; font-family: monospace; font-size: 12px;' }, (it.ports || []).join(', ') || '-'),
 					E('td', { 'style': 'text-align: center; font-size: 11px; color: #b45309;' }, (it.rules || []).join(', ')),

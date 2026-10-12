@@ -1,0 +1,6 @@
+#!/bin/sh
+# OpenGFW 清空拦截日志与统计看板助手
+LOG_FILE="/var/log/opengfw.log"
+> "$LOG_FILE"
+logger -t opengfw "OpenGFW 实时拦截记录与统计看板已被手动清空"
+echo '{"status":"ok","message":"拦截记录与日志已成功清空"}'

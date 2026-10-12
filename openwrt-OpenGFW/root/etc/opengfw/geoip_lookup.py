@@ -3,7 +3,7 @@
 """v2fly geoip.dat 的 IP→国家代码 查询模块 (纯标准库, 带磁盘缓存)
 
 用法:
-    python3 geoip_lookup.py '["1.2.3.4", "8.8.8.8"]'   →  {"1.2.3.4": "US", "8.8.8.8": "US"}
+    python3 geoip_lookup.py '["192.0.2.1", "198.51.100.1"]'   →  {"192.0.2.1": "US", "198.51.100.1": "US"}
     (参数也可从 stdin 传入同样的 JSON 数组)
 
 被 opengfw-custom-helper 的 geoip-lookup 命令与 recent-blocks 聚合调用,
