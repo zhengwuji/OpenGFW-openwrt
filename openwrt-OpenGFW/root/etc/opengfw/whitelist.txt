@@ -12,3 +12,12 @@ android.com
 1e100.net
 googlemail.com
 ggpht.com
+amdc.alipay.com
+push.apple.com
+weather-analytics-events.apple.com
+authbe.sec.intl.miui.com
+xmpush.xiaomi.com
+push.oppomobile.com
+push.vivo.com.cn
+push.hicloud.com
+default.exp-tas.com

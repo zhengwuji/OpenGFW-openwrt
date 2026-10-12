@@ -30,23 +30,24 @@
   expr: dns != nil && dns.name != nil && geosite(dns.name, "whitelist")
 
 # ------------------------------------------------------------------------------
-# 0.1 核心 Google / FCM 推送与常用云服务直通（杜绝推送中断、GMS断连与邮箱同步误杀）
+# 0.1 核心云服务、推送直通与防误杀（放行 Google / Apple / 微软 / 阿里 / 各厂商推送）
 # ------------------------------------------------------------------------------
-- name: allow google services tls
+- name: allow essential cloud & push services tls
   action: allow
-  expr: tls != nil && tls.sni != nil && (geosite(tls.sni, "google") || tls.sni contains "gvt2.com" || tls.sni contains "gvt1.com" || tls.sni contains "gvt3.com" || tls.sni contains "googleapis.com" || tls.sni contains "google.com" || tls.sni contains "gmail.com" || tls.sni contains "gstatic.com" || tls.sni contains "android.com")
+  expr: tls != nil && tls.sni != nil && (geosite(tls.sni, "google") || geosite(tls.sni, "apple") || geosite(tls.sni, "microsoft") || tls.sni contains "gvt2.com" || tls.sni contains "gvt1.com" || tls.sni contains "gvt3.com" || tls.sni contains "googleapis.com" || tls.sni contains "google.com" || tls.sni contains "gmail.com" || tls.sni contains "gstatic.com" || tls.sni contains "android.com" || tls.sni contains "push.apple.com" || tls.sni contains "amdc.alipay.com" || tls.sni contains "xmpush.xiaomi.com" || tls.sni contains "push.oppomobile.com" || tls.sni contains "push.vivo.com.cn" || tls.sni contains "push.hicloud.com" || tls.sni contains "sec.intl.miui.com")
 
-- name: allow google services http
+- name: allow essential cloud & push services http
   action: allow
-  expr: http != nil && http.host != nil && (geosite(http.host, "google") || http.host contains "gvt2.com" || http.host contains "gvt1.com" || http.host contains "gvt3.com" || http.host contains "googleapis.com" || http.host contains "google.com" || http.host contains "gmail.com" || http.host contains "gstatic.com" || http.host contains "android.com")
+  expr: http != nil && http.host != nil && (geosite(http.host, "google") || http.host contains "gvt2.com" || http.host contains "gvt1.com" || http.host contains "gvt3.com" || http.host contains "googleapis.com" || http.host contains "google.com" || http.host contains "gmail.com" || http.host contains "gstatic.com" || http.host contains "android.com" || http.host contains "push.apple.com" || http.host contains "amdc.alipay.com" || http.host contains "xmpush.xiaomi.com" || http.host contains "push.oppomobile.com" || http.host contains "push.vivo.com.cn" || http.host contains "push.hicloud.com" || http.host contains "sec.intl.miui.com")
 
-- name: allow google services quic
+- name: allow essential cloud & push services quic
   action: allow
-  expr: quic != nil && quic.sni != nil && (geosite(quic.sni, "google") || quic.sni contains "gvt2.com" || quic.sni contains "gvt1.com" || quic.sni contains "gvt3.com" || quic.sni contains "googleapis.com" || quic.sni contains "google.com" || quic.sni contains "gmail.com" || quic.sni contains "gstatic.com" || quic.sni contains "android.com")
+  expr: quic != nil && quic.sni != nil && (geosite(quic.sni, "google") || geosite(quic.sni, "apple") || geosite(quic.sni, "microsoft") || quic.sni contains "gvt2.com" || quic.sni contains "gvt1.com" || quic.sni contains "gvt3.com" || quic.sni contains "googleapis.com" || quic.sni contains "google.com" || quic.sni contains "gmail.com" || quic.sni contains "gstatic.com" || quic.sni contains "android.com" || quic.sni contains "push.apple.com" || quic.sni contains "amdc.alipay.com" || quic.sni contains "xmpush.xiaomi.com" || quic.sni contains "push.oppomobile.com" || quic.sni contains "push.vivo.com.cn" || quic.sni contains "push.hicloud.com" || quic.sni contains "sec.intl.miui.com")
 
-- name: allow google services dns
+- name: allow essential cloud & push services dns
   action: allow
-  expr: dns != nil && dns.name != nil && (geosite(dns.name, "google") || dns.name contains "gvt2.com" || dns.name contains "gvt1.com" || dns.name contains "gvt3.com" || dns.name contains "googleapis.com" || dns.name contains "google.com" || dns.name contains "gmail.com" || dns.name contains "gstatic.com" || dns.name contains "android.com")
+  expr: dns != nil && dns.name != nil && (geosite(dns.name, "google") || geosite(dns.name, "apple") || geosite(dns.name, "microsoft") || dns.name contains "gvt2.com" || dns.name contains "gvt1.com" || dns.name contains "gvt3.com" || dns.name contains "googleapis.com" || dns.name contains "google.com" || dns.name contains "gmail.com" || dns.name contains "gstatic.com" || dns.name contains "android.com" || dns.name contains "push.apple.com" || dns.name contains "amdc.alipay.com" || dns.name contains "xmpush.xiaomi.com" || dns.name contains "push.oppomobile.com" || dns.name contains "push.vivo.com.cn" || dns.name contains "push.hicloud.com" || dns.name contains "sec.intl.miui.com")
+
 
 
 
